@@ -515,3 +515,37 @@ create policy "Delete your own comment"
   using (auth.uid() = author_id);
 
 grant select on comments to anon, authenticated;
+
+
+-- ---------------------------------------------------------------
+-- Feed videos
+-- ---------------------------------------------------------------
+-- One video per post (kept separate from the photos[] array since a
+-- post is either a photo post or a video post in the app's UI).
+
+alter table feed_posts add column if not exists video_url text;
+
+-- The original constraint only allowed text-or-photos; a video-only
+-- post needs to satisfy it too, so it's re-created here.
+alter table feed_posts drop constraint if exists feed_posts_check;
+alter table feed_posts add constraint feed_posts_check
+  check (coalesce(text, '') <> '' or array_length(photos, 1) > 0 or video_url is not null);
+
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('feed-videos', 'feed-videos', true, 52428800) -- 50MB
+on conflict (id) do update set file_size_limit = 52428800;
+
+drop policy if exists "Feed videos are publicly readable" on storage.objects;
+create policy "Feed videos are publicly readable"
+  on storage.objects for select
+  using (bucket_id = 'feed-videos');
+
+drop policy if exists "Users can upload their own feed videos" on storage.objects;
+create policy "Users can upload their own feed videos"
+  on storage.objects for insert
+  with check (bucket_id = 'feed-videos' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists "Users can delete their own feed videos" on storage.objects;
+create policy "Users can delete their own feed videos"
+  on storage.objects for delete
+  using (bucket_id = 'feed-videos' and (storage.foldername(name))[1] = auth.uid()::text);

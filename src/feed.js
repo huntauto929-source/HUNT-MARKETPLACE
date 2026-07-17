@@ -86,7 +86,7 @@ export async function getFriendState() {
 
 /* ---------------------------------------------------------- FEED POSTS */
 
-export async function createPost({ text, photos, visibility }) {
+export async function createPost({ text, photos, video, visibility }) {
   const session = await currentSession();
   if (!session) throw new Error("You need to be logged in to post.");
   const meta = session.user.user_metadata || {};
@@ -95,6 +95,7 @@ export async function createPost({ text, photos, visibility }) {
     author_username: (meta.username || "").toLowerCase(),
     text: text?.trim() || null,
     photos: photos || [],
+    video_url: video || null,
     visibility: visibility || "public",
   });
   if (error) throw error;
@@ -115,6 +116,7 @@ export async function getFeed({ username } = {}) {
     authorUsername: p.author_username,
     text: p.text,
     photos: p.photos || [],
+    video: p.video_url || null,
     visibility: p.visibility,
     createdAt: new Date(p.created_at).getTime(),
   }));

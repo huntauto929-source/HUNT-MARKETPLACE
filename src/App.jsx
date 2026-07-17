@@ -4,10 +4,10 @@ import {
   Wrench, ShieldCheck, Send, Car, Fuel, Clock, AlertTriangle,
   CreditCard, CheckCircle, Lock, Package, Shield, Radio, Flag,
   MapPin, Trash2, Navigation, Star, Pencil, Image as ImageIcon, Bell,
-  Heart, MessageSquare, Users, Globe, EyeOff, UserPlus, UserCheck, Camera, Eye, Mail,
+  Heart, MessageSquare, Users, Globe, EyeOff, UserPlus, UserCheck, Camera, Eye, Mail, Video, Film,
 } from "lucide-react";
 import { signUp, signIn, signOut, sendPasswordReset, updatePassword, updateProfile, getSessionUser, onAuthChange, fileReport, getPublicProfile, submitReview, getReviews, getMyReviewedListingIds } from "./authClient.js";
-import { uploadListingPhotos, deleteListingPhotos, validatePhotoFiles, MAX_PHOTOS, uploadAvatar } from "./photos.js";
+import { uploadListingPhotos, deleteListingPhotos, validatePhotoFiles, MAX_PHOTOS, uploadAvatar, validateVideoFile, uploadFeedVideo, deleteFeedVideo } from "./photos.js";
 import {
   getLastRead, setLastRead, notificationsSupported, notificationPermission,
   requestNotificationPermission, maybeNotifyNewMessage,
@@ -457,6 +457,76 @@ function PhotoPicker({ photos, setPhotos, disabled }) {
       {error && <p style={{ fontSize: 11, color: C.warn, marginTop: 6 }}>{error}</p>}
       <p style={{ fontSize: 10.5, color: C.mutedDim, marginTop: 6, lineHeight: 1.5 }}>
         Optional, up to {MAX_PHOTOS}. JPEG, PNG, WEBP, or GIF, under 8MB each.
+      </p>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------- VIDEO PICKER (feed posts) */
+function VideoPicker({ video, setVideo, disabled }) {
+  const inputRef = useRef(null);
+  const [error, setError] = useState("");
+
+  const pick = (file) => {
+    setError("");
+    if (!file) return;
+    try {
+      validateVideoFile(file);
+      if (video?.url) URL.revokeObjectURL(video.url);
+      setVideo({ file, url: URL.createObjectURL(file) });
+    } catch (err) {
+      setError(err?.message || "Couldn't add that video.");
+    }
+  };
+
+  const remove = () => {
+    if (video?.url) URL.revokeObjectURL(video.url);
+    setVideo(null);
+  };
+
+  return (
+    <div>
+      <label style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: C.muted, marginLeft: 4 }}>
+        Video
+      </label>
+      <div style={{ marginTop: 6 }}>
+        {video ? (
+          <div style={{ position: "relative", borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }}>
+            <video src={video.url} controls style={{ width: "100%", maxHeight: 240, display: "block", background: "#000" }} />
+            {!disabled && (
+              <button
+                type="button"
+                onClick={remove}
+                title="Remove video"
+                style={{ position: "absolute", top: 6, right: 6, background: "rgba(0,0,0,0.65)", border: "none", borderRadius: 999, color: "#fff", width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+        ) : (
+          !disabled && (
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              style={{ width: "100%", padding: "14px 0", borderRadius: 10, border: `1px dashed ${C.border}`, background: "none", color: C.mutedDim, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, cursor: "pointer" }}
+            >
+              <Video size={18} />
+              <span style={{ fontSize: 10.5, fontWeight: 700 }}>Add a video</span>
+            </button>
+          )
+        )}
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="video/mp4,video/webm,video/quicktime"
+        hidden
+        onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ""; }}
+      />
+      {error && <p style={{ fontSize: 11, color: C.warn, marginTop: 6 }}>{error}</p>}
+      <p style={{ fontSize: 10.5, color: C.mutedDim, marginTop: 6, lineHeight: 1.5 }}>
+        Optional. MP4, WEBM, or MOV, under 50MB.
       </p>
     </div>
   );
@@ -2227,9 +2297,11 @@ function FeedScreen({ user }) {
   const [commentCounts, setCommentCounts] = useState({});
   const [commentsTarget, setCommentsTarget] = useState(null);
   const [friendState, setFriendState] = useState({ friends: [], incoming: [], outgoing: [] });
+  const [filter, setFilter] = useState("all"); // all | videos
 
   const [composerText, setComposerText] = useState("");
   const [composerPhotos, setComposerPhotos] = useState([]);
+  const [composerVideo, setComposerVideo] = useState(null);
   const [composerVisibility, setComposerVisibility] = useState("public");
   const [posting, setPosting] = useState(false);
   const [error, setError] = useState("");
@@ -2261,11 +2333,20 @@ function FeedScreen({ user }) {
 
   useEffect(() => { loadFeed(); loadFriends(); }, [loadFeed, loadFriends]);
 
+  const setPhotosExclusive = (updater) => {
+    setComposerVideo(null);
+    setComposerPhotos(updater);
+  };
+  const setVideoExclusive = (v) => {
+    setComposerPhotos([]);
+    setComposerVideo(v);
+  };
+
   const submitPost = async (e) => {
     e.preventDefault();
     setError("");
-    if (!composerText.trim() && composerPhotos.length === 0) {
-      setError("Write something or add a photo first.");
+    if (!composerText.trim() && composerPhotos.length === 0 && !composerVideo) {
+      setError("Write something, or add a photo or video first.");
       return;
     }
     setPosting(true);
@@ -2274,9 +2355,10 @@ function FeedScreen({ user }) {
       const uploadedUrls = filesToUpload.length ? await uploadListingPhotos(filesToUpload) : [];
       let uIdx = 0;
       const photoUrls = composerPhotos.map((p) => (p.file ? uploadedUrls[uIdx++] : p.url));
+      const videoUrl = composerVideo?.file ? await uploadFeedVideo(composerVideo.file) : null;
 
-      await createPost({ text: composerText, photos: photoUrls, visibility: composerVisibility });
-      setComposerText(""); setComposerPhotos([]); setComposerVisibility("public");
+      await createPost({ text: composerText, photos: photoUrls, video: videoUrl, visibility: composerVisibility });
+      setComposerText(""); setComposerPhotos([]); setComposerVideo(null); setComposerVisibility("public");
       await loadFeed();
     } catch (err) {
       setError(err?.message || "Couldn't post that. Try again.");
@@ -2285,11 +2367,12 @@ function FeedScreen({ user }) {
     }
   };
 
-  const removePost = async (id) => {
+  const removePost = async (post) => {
     if (!window.confirm("Delete this post? This can't be undone.")) return;
     try {
-      await deletePost(id);
-      setPosts((p) => p.filter((post) => post.id !== id));
+      await deletePost(post.id);
+      if (post.video) deleteFeedVideo(post.video).catch((err) => console.error("Couldn't clean up video:", err));
+      setPosts((p) => p.filter((x) => x.id !== post.id));
     } catch (err) {
       window.alert(err?.message || "Couldn't delete that post.");
     }
@@ -2301,17 +2384,21 @@ function FeedScreen({ user }) {
     { id: "private", label: "Only me", icon: EyeOff },
   ];
 
+  const visiblePosts = filter === "videos" ? posts.filter((p) => p.video) : posts;
+  const videoCount = posts.filter((p) => p.video).length;
+
   return (
     <div style={{ maxWidth: 640, margin: "0 auto", padding: "24px 16px" }}>
       <Eyebrow dot>Share something with HunT</Eyebrow>
       <h1 style={{ fontSize: 24, fontWeight: 900, marginTop: 6, marginBottom: 4 }}>Feed</h1>
-      <p style={{ color: C.muted, fontSize: 13, marginBottom: 18 }}>Post thoughts or photos — you pick who sees them.</p>
+      <p style={{ color: C.muted, fontSize: 13, marginBottom: 18 }}>Post thoughts, photos, or videos — you pick who sees them.</p>
 
       <FriendsPanel friendState={friendState} onChanged={loadFriends} />
 
       <form onSubmit={submitPost} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 22, display: "flex", flexDirection: "column", gap: 12 }}>
         <Field as="textarea" rows={3} value={composerText} onChange={(e) => setComposerText(e.target.value)} placeholder="What's on your mind?" style={{ resize: "none" }} />
-        <PhotoPicker photos={composerPhotos} setPhotos={setComposerPhotos} disabled={posting} />
+        {!composerVideo && <PhotoPicker photos={composerPhotos} setPhotos={setPhotosExclusive} disabled={posting} />}
+        {composerPhotos.length === 0 && <VideoPicker video={composerVideo} setVideo={setVideoExclusive} disabled={posting} />}
         <div style={{ display: "flex", background: C.panel2, borderRadius: 10, padding: 4, border: `1px solid ${C.border}` }}>
           {visibilityOptions.map((v) => (
             <button
@@ -2333,15 +2420,40 @@ function FeedScreen({ user }) {
         <Btn type="submit" disabled={posting}>{posting ? "Posting..." : "Post"}</Btn>
       </form>
 
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button
+          onClick={() => setFilter("all")}
+          style={{
+            padding: "7px 14px", borderRadius: 999, fontSize: 11, fontWeight: 800, textTransform: "uppercase",
+            border: `1px solid ${filter === "all" ? C.accent : C.border}`, cursor: "pointer",
+            background: filter === "all" ? C.accent : "transparent", color: filter === "all" ? "#0a0a0a" : C.muted,
+          }}
+        >
+          All
+        </button>
+        <button
+          onClick={() => setFilter("videos")}
+          style={{
+            display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", borderRadius: 999, fontSize: 11, fontWeight: 800, textTransform: "uppercase",
+            border: `1px solid ${filter === "videos" ? C.accent : C.border}`, cursor: "pointer",
+            background: filter === "videos" ? C.accent : "transparent", color: filter === "videos" ? "#0a0a0a" : C.muted,
+          }}
+        >
+          <Film size={12} /> Videos ({videoCount})
+        </button>
+      </div>
+
       {loading ? (
         <p style={{ color: C.mutedDim, fontSize: 13, fontFamily: MONO }}>Loading feed...</p>
-      ) : posts.length === 0 ? (
+      ) : visiblePosts.length === 0 ? (
         <div style={{ border: `1px dashed ${C.border}`, borderRadius: 14, padding: "50px 20px", textAlign: "center" }}>
-          <p style={{ color: C.muted, fontSize: 13 }}>Nothing here yet. Be the first to post.</p>
+          <p style={{ color: C.muted, fontSize: 13 }}>
+            {filter === "videos" ? "No videos posted yet." : "Nothing here yet. Be the first to post."}
+          </p>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {posts.map((p) => {
+          {visiblePosts.map((p) => {
             const VisIcon = visibilityIcon(p.visibility);
             return (
               <div key={p.id} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16 }}>
@@ -2354,15 +2466,17 @@ function FeedScreen({ user }) {
                     </p>
                   </div>
                   {p.authorUsername === user.username && (
-                    <button onClick={() => removePost(p.id)} title="Delete post" style={{ background: "none", border: "none", color: C.mutedDim, cursor: "pointer", padding: 2 }}>
+                    <button onClick={() => removePost(p)} title="Delete post" style={{ background: "none", border: "none", color: C.mutedDim, cursor: "pointer", padding: 2 }}>
                       <Trash2 size={14} />
                     </button>
                   )}
                 </div>
 
-                {p.text && <p style={{ fontSize: 13.5, color: C.text, lineHeight: 1.55, marginBottom: p.photos.length ? 10 : 0 }}>{p.text}</p>}
+                {p.text && <p style={{ fontSize: 13.5, color: C.text, lineHeight: 1.55, marginBottom: (p.photos.length || p.video) ? 10 : 0 }}>{p.text}</p>}
 
-                {p.photos.length > 0 && (
+                {p.video ? (
+                  <video src={p.video} controls style={{ width: "100%", maxHeight: 400, borderRadius: 10, background: "#000", display: "block" }} />
+                ) : p.photos.length > 0 && (
                   <div style={{ display: "grid", gridTemplateColumns: p.photos.length === 1 ? "1fr" : "1fr 1fr", gap: 6, marginBottom: 4, borderRadius: 10, overflow: "hidden" }}>
                     {p.photos.map((url, i) => (
                       <img key={i} src={url} alt="" style={{ width: "100%", height: p.photos.length === 1 ? 280 : 140, objectFit: "cover" }} />
@@ -2772,49 +2886,102 @@ function SecurityCard({ user }) {
 }
 
 /* ---------------------------------------------------------- ACTIVITY (recent likes/comments on your stuff) */
-function ActivityCard({ items, onNavigate }) {
-  if (!items.length) return null;
+function NotificationsCard({ items, unreadByUser, onNavigate, onOpenChat }) {
+  const messageEntries = Object.entries(unreadByUser || {}).filter(([, count]) => count > 0);
+  const [tab, setTab] = useState(messageEntries.length ? "messages" : "activity");
+
+  if (!items.length && !messageEntries.length) return null;
+
+  const tabs = [
+    { id: "messages", label: "Messages", count: messageEntries.length },
+    { id: "activity", label: "Activity", count: items.length },
+  ];
+
   return (
     <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 24 }}>
-      <p style={{ fontSize: 11, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.muted, marginBottom: 12 }}>
-        Activity
-      </p>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {items.slice(0, 8).map((it) => {
-          const Icon = it.type === "like" ? Heart : MessageSquare;
-          const verb = it.type === "like" ? "liked" : "commented on";
-          const subject = it.kind === "listing" ? `your listing "${it.title || "listing"}"` : "your post";
-          return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <p style={{ fontSize: 11, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.muted }}>
+          Notifications
+        </p>
+        <div style={{ display: "flex", gap: 4 }}>
+          {tabs.map((t) => (
             <button
-              key={it.id}
-              onClick={() => onNavigate?.(it.kind === "listing" ? "home" : "feed")}
+              key={t.id}
+              onClick={() => setTab(t.id)}
               style={{
-                display: "flex", alignItems: "flex-start", gap: 10, background: C.panel2, border: "none",
-                borderRadius: 10, padding: "10px 12px", cursor: "pointer", textAlign: "left",
+                display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", borderRadius: 999,
+                fontSize: 10.5, fontWeight: 800, textTransform: "uppercase", border: "none", cursor: "pointer",
+                background: tab === t.id ? C.accent : C.panel2, color: tab === t.id ? "#0a0a0a" : C.muted,
               }}
             >
-              <Icon size={14} color={it.type === "like" ? C.warn : C.accent} style={{ marginTop: 2, flexShrink: 0 }} />
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <p style={{ fontSize: 12.5, color: C.text, lineHeight: 1.4 }}>
-                  <span style={{ fontWeight: 800 }}>@{it.actor}</span> {verb} {subject}
-                </p>
-                {it.text && (
-                  <p style={{ fontSize: 12, color: C.mutedDim, lineHeight: 1.4, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    "{it.text}"
-                  </p>
-                )}
-                <p style={{ fontSize: 10, color: C.mutedDim, fontFamily: MONO, marginTop: 3 }}>{timeAgo(it.ts)}</p>
-              </div>
+              {t.label} {t.count > 0 && <span style={{ fontFamily: MONO }}>({t.count})</span>}
             </button>
-          );
-        })}
+          ))}
+        </div>
       </div>
+
+      {tab === "messages" ? (
+        messageEntries.length === 0 ? (
+          <p style={{ color: C.mutedDim, fontSize: 12.5 }}>No unread messages.</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {messageEntries.map(([username, count]) => (
+              <button
+                key={username}
+                onClick={() => onOpenChat?.(username)}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: C.panel2, border: "none", borderRadius: 10, padding: "10px 12px", cursor: "pointer", textAlign: "left" }}
+              >
+                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <MessageCircle size={14} color={C.accent} />
+                  <span style={{ fontSize: 12.5, fontFamily: MONO, fontWeight: 800 }}>@{username}</span>
+                </span>
+                <span style={{ fontSize: 10.5, fontWeight: 900, color: "#0a0a0a", background: C.warn, borderRadius: 999, padding: "2px 8px" }}>
+                  {count > 9 ? "9+" : count}
+                </span>
+              </button>
+            ))}
+          </div>
+        )
+      ) : items.length === 0 ? (
+        <p style={{ color: C.mutedDim, fontSize: 12.5 }}>No activity yet.</p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {items.slice(0, 8).map((it) => {
+            const Icon = it.type === "like" ? Heart : MessageSquare;
+            const verb = it.type === "like" ? "liked" : "commented on";
+            const subject = it.kind === "listing" ? `your listing "${it.title || "listing"}"` : "your post";
+            return (
+              <button
+                key={it.id}
+                onClick={() => onNavigate?.(it.kind === "listing" ? "home" : "feed")}
+                style={{
+                  display: "flex", alignItems: "flex-start", gap: 10, background: C.panel2, border: "none",
+                  borderRadius: 10, padding: "10px 12px", cursor: "pointer", textAlign: "left",
+                }}
+              >
+                <Icon size={14} color={it.type === "like" ? C.warn : C.accent} style={{ marginTop: 2, flexShrink: 0 }} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <p style={{ fontSize: 12.5, color: C.text, lineHeight: 1.4 }}>
+                    <span style={{ fontWeight: 800 }}>@{it.actor}</span> {verb} {subject}
+                  </p>
+                  {it.text && (
+                    <p style={{ fontSize: 12, color: C.mutedDim, lineHeight: 1.4, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      "{it.text}"
+                    </p>
+                  )}
+                  <p style={{ fontSize: 10, color: C.mutedDim, fontFamily: MONO, marginTop: 3 }}>{timeAgo(it.ts)}</p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
 /* ---------------------------------------------------------- PROFILE */
-function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileUpdated, theme, onThemeChange, activityFeed = [], onActivitySeen, onNavigate }) {
+function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileUpdated, theme, onThemeChange, activityFeed = [], onActivitySeen, onNavigate, unreadByUser = {}, onOpenChat }) {
   const mine = listings.filter((l) => l.seller === user.username);
   const [orders, setOrders] = useState([]);
   const [deletingId, setDeletingId] = useState(null);
@@ -2926,7 +3093,7 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileU
       {avatarError && <div style={{ marginBottom: 12 }}><ErrorNote>{avatarError}</ErrorNote></div>}
       <div style={{ marginBottom: 12 }} />
 
-      <ActivityCard items={activityFeed} onNavigate={onNavigate} />
+      <NotificationsCard items={activityFeed} unreadByUser={unreadByUser} onNavigate={onNavigate} onOpenChat={onOpenChat} />
 
       <PersonalInfoCard user={user} onProfileUpdated={onProfileUpdated} />
 
@@ -3329,6 +3496,8 @@ export default function HunT() {
           activityFeed={activityFeed}
           onActivitySeen={markActivitySeen}
           onNavigate={(s) => setScreen(s)}
+          unreadByUser={unreadByUser}
+          onOpenChat={goChat}
         />
       )}
 
