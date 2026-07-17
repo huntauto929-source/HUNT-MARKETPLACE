@@ -2,8 +2,11 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Search, Plus, MessageCircle, User, LogOut, X, ChevronLeft,
   Wrench, ShieldCheck, Send, Car, Fuel, Clock, AlertTriangle,
-  CreditCard, CheckCircle, Lock, Package, Shield, Radio,
+  CreditCard, CheckCircle, Lock, Package, Shield, Radio, Flag,
+  MapPin, Trash2, Navigation,
 } from "lucide-react";
+import { signUp, signIn, signOut, sendPasswordReset, updatePassword, getSessionUser, onAuthChange, fileReport, getPublicProfile } from "./authClient.js";
+import { geocodeAddress, reverseGeocode, getCurrentPosition, googleMapsEmbedUrl, googleMapsDirectionsUrl } from "./geo.js";
 
 /* ===========================================================
    HunT — automobile trade marketplace.
@@ -71,32 +74,6 @@ function timeAgo(ts) {
 }
 function chatKey(a, b) {
   return "hunt:chat:" + [a, b].sort().join("__");
-}
-async function hashPassword(pw) {
-  const enc = new TextEncoder().encode(pw);
-  const buf = await crypto.subtle.digest("SHA-256", enc);
-  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-async function findUserByIdentifier(identifier) {
-  const id = identifier.trim().toLowerCase();
-  if (!id) return null;
-  try {
-    const res = await window.storage.get(`hunt:user:${id}`, true);
-    if (res) return JSON.parse(res.value);
-  } catch (_) {}
-  try {
-    const list = await window.storage.list("hunt:user:", true);
-    const keys = list?.keys || [];
-    for (const k of keys) {
-      try {
-        const res = await window.storage.get(k, true);
-        if (!res) continue;
-        const u = JSON.parse(res.value);
-        if (u.contactValue && u.contactValue.toLowerCase() === id) return u;
-      } catch (_) {}
-    }
-  } catch (_) {}
-  return null;
 }
 
 /* ---------------------------------------------------------- GLOBAL STYLE TAG */
@@ -196,7 +173,7 @@ function SecureChip() {
       }}
     >
       <Shield size={11} />
-      Secure demo session
+      Secure session
     </div>
   );
 }
@@ -213,6 +190,22 @@ function MinorChip() {
     >
       <ShieldCheck size={11} />
       Limited access · under 18
+    </div>
+  );
+}
+
+function RestrictedChip() {
+  return (
+    <div
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 6,
+        border: `1px solid rgba(255,107,74,0.4)`, background: C.warnDim,
+        borderRadius: 999, padding: "4px 10px",
+        fontFamily: MONO, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: C.warn,
+      }}
+    >
+      <Flag size={11} />
+      Restricted after complaints
     </div>
   );
 }
@@ -316,28 +309,41 @@ function AuthShell({ children }) {
 }
 
 function AuthScreen({ onLogin }) {
-  const [mode, setMode] = useState("signup");
-  const [step, setStep] = useState("form");
-  const [form, setForm] = useState({ name: "", username: "", dob: "", password: "", identifier: "" });
-  const [contactMethod, setContactMethod] = useState("email");
-  const [contactValue, setContactValue] = useState("");
-  const [genCode, setGenCode] = useState("");
-  const [enteredCode, setEnteredCode] = useState("");
+  const [mode, setMode] = useState("signup"); // signup | login | forgot | check-email
+  const [form, setForm] = useState({ name: "", username: "", dob: "", email: "", password: "" });
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [agreed, setAgreed] = useState(false);
 
   const update = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
-  const startVerification = async (e) => {
+  const switchMode = (m) => { setMode(m); setError(""); setNotice(""); };
+
+  const tabStyle = (active) => ({
+    flex: 1, padding: "9px 0", borderRadius: 8, fontSize: 13, fontWeight: 800,
+    textTransform: "uppercase", letterSpacing: "0.03em", border: "none", cursor: "pointer",
+    background: active ? C.accent : "transparent", color: active ? "#0a0a0a" : C.muted,
+    transition: "all .15s",
+  });
+
+  const doSignUp = async (e) => {
     e.preventDefault();
     setError("");
-    if (!form.name.trim() || !form.username.trim() || !form.dob || !form.password) {
+    if (!form.name.trim() || !form.username.trim() || !form.dob || !form.email.trim() || !form.password) {
       setError("Fill in every field to create your ID.");
       return;
     }
     if (!USERNAME_RE.test(form.username.trim())) {
       setError("HunT ID can only use letters, numbers, dots, dashes, or underscores — no spaces.");
+      return;
+    }
+    if (!EMAIL_RE.test(form.email.trim())) {
+      setError("That doesn't look like a valid email.");
+      return;
+    }
+    if (form.password.length < 8) {
+      setError("Password needs to be at least 8 characters.");
       return;
     }
     if (!agreed) {
@@ -350,111 +356,95 @@ function AuthScreen({ onLogin }) {
       setError(`HunT is for members ${ADMIN_MIN_AGE}+. This account can't be created.`);
       return;
     }
-    const cv = contactValue.trim();
-    if (!cv) { setError(`Add a${contactMethod === "email" ? "n email" : " phone number"} to link.`); return; }
-    if (contactMethod === "email" && !EMAIL_RE.test(cv)) { setError("That doesn't look like a valid email."); return; }
-    if (contactMethod === "phone" && !PHONE_RE.test(cv)) { setError("That doesn't look like a valid phone number."); return; }
-
-    const uname = form.username.trim().toLowerCase();
     setBusy(true);
     try {
-      const exists = await window.storage.get(`hunt:user:${uname}`, true).catch(() => null);
-      if (exists) { setError("That ID is already taken. Try another."); setBusy(false); return; }
-      const takenBy = await findUserByIdentifier(cv);
-      if (takenBy) { setError(`That ${contactMethod} is already linked to another HunT ID.`); setBusy(false); return; }
-      const code = String(Math.floor(100000 + Math.random() * 900000));
-      setGenCode(code);
-      setStep("verify");
+      await signUp({
+        email: form.email.trim(),
+        password: form.password,
+        username: form.username.trim(),
+        name: form.name.trim(),
+        dob: form.dob,
+      });
+      setNotice(`We sent a confirmation link to ${form.email.trim()}. Click it, then come back and log in.`);
+      setMode("check-email");
     } catch (err) {
-      console.error("HunT signup (start verification) error:", err);
-      setError(`Couldn't start verification: ${err?.message || "unknown error"}. Try again.`);
+      console.error("HunT signup error:", err);
+      setError(err?.message || "Couldn't create your ID. Try again.");
     } finally {
       setBusy(false);
     }
   };
 
-  const confirmVerification = async (e) => {
+  const doLogin = async (e) => {
     e.preventDefault();
     setError("");
-    if (enteredCode.trim() !== genCode) { setError("That code doesn't match. Check and try again."); return; }
-    const uname = form.username.trim().toLowerCase();
+    if (!form.email.trim() || !form.password) {
+      setError("Enter your email and password.");
+      return;
+    }
     setBusy(true);
     try {
-      const passwordHash = await hashPassword(form.password);
-      const user = {
-        username: uname, name: form.name.trim(), dob: form.dob, passwordHash,
-        contactMethod, contactValue: contactValue.trim(), contactVerified: true, createdAt: Date.now(),
-      };
-      await window.storage.set(`hunt:user:${uname}`, JSON.stringify(user), true);
-      onLogin(user);
+      await signIn({ email: form.email.trim(), password: form.password });
+      // onAuthChange (set up by the root component) picks up the new
+      // session and calls onLogin automatically.
     } catch (err) {
-      console.error("HunT signup (create ID) error:", err);
-      setError(`Couldn't create your ID: ${err?.message || "unknown error"}. Try again.`);
+      setError(err?.message || "Couldn't log in. Check your email and password.");
     } finally {
       setBusy(false);
     }
   };
 
-  const login = async (e) => {
+  const doForgotPassword = async (e) => {
     e.preventDefault();
     setError("");
-    const id = form.identifier.trim();
-    if (!id || !form.password) { setError("Enter your ID, email, or phone, plus your password."); return; }
+    if (!form.email.trim() || !EMAIL_RE.test(form.email.trim())) {
+      setError("Enter the email your account uses.");
+      return;
+    }
     setBusy(true);
     try {
-      const user = await findUserByIdentifier(id);
-      if (!user) { setError("No ID found with that username, email, or phone."); setBusy(false); return; }
-      const enteredHash = await hashPassword(form.password);
-      const storedHash = user.passwordHash || (user.password ? await hashPassword(user.password) : null);
-      if (enteredHash !== storedHash) { setError("Wrong password."); setBusy(false); return; }
-      setBusy(false);
-      onLogin(user);
+      await sendPasswordReset(form.email.trim());
+      setNotice(`If ${form.email.trim()} has a HunT account, a password reset link is on its way.`);
     } catch (err) {
+      setError(err?.message || "Couldn't send the reset email. Try again.");
+    } finally {
       setBusy(false);
-      setError("No ID found with that username, email, or phone.");
     }
   };
 
-  const switchMode = (m) => { setMode(m); setStep("form"); setError(""); setEnteredCode(""); };
-
-  const tabStyle = (active) => ({
-    flex: 1, padding: "9px 0", borderRadius: 8, fontSize: 13, fontWeight: 800,
-    textTransform: "uppercase", letterSpacing: "0.03em", border: "none", cursor: "pointer",
-    background: active ? C.accent : "transparent", color: active ? "#0a0a0a" : C.muted,
-    transition: "all .15s",
-  });
-
-  if (mode === "signup" && step === "verify") {
+  if (mode === "check-email") {
     return (
       <AuthShell>
-        <div style={{ textAlign: "center", marginBottom: 28 }}>
+        <div style={{ textAlign: "center", marginBottom: 20 }}>
+          <Logo size={34} />
+        </div>
+        <div style={{ background: C.accentDim, border: `1px solid ${C.accentLine}`, borderRadius: 10, padding: "16px 18px", fontSize: 13, color: C.accent, lineHeight: 1.6, marginBottom: 16 }}>
+          {notice}
+        </div>
+        <Btn onClick={() => switchMode("login")} style={{ width: "100%" }}>Back to log in</Btn>
+      </AuthShell>
+    );
+  }
+
+  if (mode === "forgot") {
+    return (
+      <AuthShell>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
           <Logo size={34} />
           <div style={{ marginTop: 10 }}>
-            <Eyebrow>Verify your {contactMethod}</Eyebrow>
+            <Eyebrow>Reset your password</Eyebrow>
           </div>
         </div>
-
-        <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 16px", marginBottom: 12 }}>
-          <p style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Sending a code to</p>
-          <p style={{ fontWeight: 800, fontFamily: MONO }}>{contactValue}</p>
-        </div>
-
-        <div style={{ background: C.accentDim, border: `1px solid ${C.accentLine}`, borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 12, color: C.accent, lineHeight: 1.6 }}>
-          This demo can't actually send {contactMethod === "email" ? "an email" : "a text"}. Your
-          verification code is <span style={{ fontWeight: 900, fontSize: 15, fontFamily: MONO }}>{genCode}</span> — enter it below to prove the flow.
-        </div>
-
-        <form onSubmit={confirmVerification} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <Field
-            value={enteredCode}
-            onChange={(e) => setEnteredCode(e.target.value.replace(/[^0-9]/g, ""))}
-            placeholder="000000"
-            maxLength={6}
-            style={{ textAlign: "center", letterSpacing: "0.5em", fontSize: 20, fontFamily: MONO, paddingLeft: 8 }}
-          />
+        <form onSubmit={doForgotPassword} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <Field type="email" value={form.email} onChange={(e) => update("email", e.target.value)} placeholder="Your account email" />
+          {notice && (
+            <div style={{ background: C.accentDim, border: `1px solid ${C.accentLine}`, borderRadius: 10, padding: "12px 16px", fontSize: 12, color: C.accent, lineHeight: 1.6 }}>
+              {notice}
+            </div>
+          )}
           {error && <ErrorNote>{error}</ErrorNote>}
-          <Btn type="submit" disabled={busy}>{busy ? "Verifying..." : "Verify & create my ID"}</Btn>
-          <Btn type="button" variant="subtle" onClick={() => setStep("form")}>Back</Btn>
+          <Btn type="submit" disabled={busy}>{busy ? "Sending..." : "Send reset link"}</Btn>
+          <Btn type="button" variant="subtle" onClick={() => switchMode("login")}>Back to log in</Btn>
         </form>
       </AuthShell>
     );
@@ -480,92 +470,113 @@ function AuthScreen({ onLogin }) {
         ))}
       </div>
 
-      <form onSubmit={mode === "signup" ? startVerification : login} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <form onSubmit={mode === "signup" ? doSignUp : doLogin} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {mode === "signup" && (
-          <Field value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="Full name" />
-        )}
-        <Field
-          value={mode === "signup" ? form.username : form.identifier}
-          onChange={(e) => (mode === "signup" ? update("username", e.target.value) : update("identifier", e.target.value))}
-          placeholder={mode === "signup" ? "Choose a HunT ID (username)" : "HunT ID, email, or phone"}
-        />
-        {mode === "signup" && (
-          <div>
-            <label style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: C.muted, marginLeft: 4 }}>
-              Date of birth
-            </label>
-            <div style={{ marginTop: 5 }}>
-              <Field as="input" type="date" value={form.dob} onChange={(e) => update("dob", e.target.value)} />
+          <>
+            <Field value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="Full name" />
+            <Field value={form.username} onChange={(e) => update("username", e.target.value)} placeholder="Choose a HunT ID (username)" />
+            <div>
+              <label style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: C.muted, marginLeft: 4 }}>
+                Date of birth
+              </label>
+              <div style={{ marginTop: 5 }}>
+                <Field type="date" value={form.dob} onChange={(e) => update("dob", e.target.value)} />
+              </div>
             </div>
-          </div>
+          </>
         )}
+
+        <Field type="email" value={form.email} onChange={(e) => update("email", e.target.value)} placeholder="Email" />
         <Field type="password" value={form.password} onChange={(e) => update("password", e.target.value)} placeholder="Password" />
         {mode === "signup" && (
           <p style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: C.mutedDim, marginLeft: 4 }}>
-            <Lock size={10} /> Your password is hashed before it's stored — HunT never saves it as plain text.
+            <Lock size={10} /> At least 8 characters. You'll confirm this email before logging in.
           </p>
         )}
-
-        {mode === "signup" && (
-          <div>
-            <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, fontFamily: MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: C.muted, marginLeft: 4 }}>
-              <Lock size={10} /> Link an account
-            </label>
-            <div style={{ display: "flex", background: C.panel, borderRadius: 10, padding: 4, marginTop: 6, marginBottom: 8, border: `1px solid ${C.border}` }}>
-              {[{ id: "email", label: "Gmail / Email" }, { id: "phone", label: "Phone" }].map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => { setContactMethod(c.id); setContactValue(""); }}
-                  style={{ ...tabStyle(contactMethod === c.id), fontSize: 11, padding: "7px 0" }}
-                >
-                  {c.label}
-                </button>
-              ))}
-            </div>
-            <Field
-              value={contactValue}
-              onChange={(e) => setContactValue(e.target.value)}
-              type={contactMethod === "email" ? "email" : "tel"}
-              placeholder={contactMethod === "email" ? "you@gmail.com" : "+1 555 123 4567"}
-            />
-          </div>
+        {mode === "login" && (
+          <button
+            type="button"
+            onClick={() => switchMode("forgot")}
+            style={{ alignSelf: "flex-end", background: "none", border: "none", color: C.accent, fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0 }}
+          >
+            Forgot password?
+          </button>
         )}
 
         {error && <ErrorNote>{error}</ErrorNote>}
 
         {mode === "signup" && (
-          <p style={{ fontSize: 10.5, color: C.mutedDim, lineHeight: 1.6, padding: "0 4px" }}>
-            You must be {ADMIN_MIN_AGE} or older to create a HunT ID. We'll send a one-time code to
-            confirm your {contactMethod === "email" ? "email" : "phone"} before your account is created.
-          </p>
-        )}
-
-        {mode === "signup" && (
-          <label style={{ display: "flex", alignItems: "flex-start", gap: 10, fontSize: 11.5, color: C.muted, padding: "2px 4px", cursor: "pointer", lineHeight: 1.5 }}>
-            <input
-              type="checkbox"
-              checked={agreed}
-              onChange={(e) => setAgreed(e.target.checked)}
-              style={{ marginTop: 2, width: 15, height: 15, accentColor: C.accent, flexShrink: 0 }}
-            />
-            <span>
-              I agree to HunT's Terms of Use and Privacy Notice, and confirm the account details I've
-              given are my own.
-            </span>
-          </label>
+          <>
+            <p style={{ fontSize: 10.5, color: C.mutedDim, lineHeight: 1.6, padding: "0 4px" }}>
+              You must be {ADMIN_MIN_AGE} or older to create a HunT ID.
+            </p>
+            <label style={{ display: "flex", alignItems: "flex-start", gap: 10, fontSize: 11.5, color: C.muted, padding: "2px 4px", cursor: "pointer", lineHeight: 1.5 }}>
+              <input
+                type="checkbox"
+                checked={agreed}
+                onChange={(e) => setAgreed(e.target.checked)}
+                style={{ marginTop: 2, width: 15, height: 15, accentColor: C.accent, flexShrink: 0 }}
+              />
+              <span>
+                I agree to HunT's Terms of Use and Privacy Notice, and confirm the account details
+                I've given are my own.
+              </span>
+            </label>
+          </>
         )}
 
         <Btn type="submit" disabled={busy}>
-          {busy ? "Working..." : mode === "signup" ? "Send verification code" : "Log in"}
+          {busy ? "Working..." : mode === "signup" ? "Create my ID" : "Log in"}
         </Btn>
       </form>
     </AuthShell>
   );
 }
 
+/* ---------------------------------------------------------- SET NEW PASSWORD (from reset email) */
+function ResetPasswordScreen({ onDone }) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    if (password.length < 8) { setError("Password needs to be at least 8 characters."); return; }
+    if (password !== confirm) { setError("Passwords don't match."); return; }
+    setBusy(true);
+    try {
+      await updatePassword(password);
+      onDone();
+    } catch (err) {
+      setError(err?.message || "Couldn't update your password. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <AuthShell>
+      <div style={{ textAlign: "center", marginBottom: 24 }}>
+        <Logo size={34} />
+        <div style={{ marginTop: 10 }}>
+          <Eyebrow>Set a new password</Eyebrow>
+        </div>
+      </div>
+      <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Field type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="New password" />
+        <Field type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="Confirm new password" />
+        {error && <ErrorNote>{error}</ErrorNote>}
+        <Btn type="submit" disabled={busy}>{busy ? "Saving..." : "Save new password"}</Btn>
+      </form>
+    </AuthShell>
+  );
+}
+
+
 /* ---------------------------------------------------------- NAV */
-function NavShell({ user, screen, setScreen, onLogout, children, isMinor }) {
+function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRestricted }) {
   const items = [
     { id: "home", label: "Market", icon: Search },
     { id: "post", label: "Sell", icon: Plus },
@@ -586,12 +597,17 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor }) {
     <div style={{ minHeight: "100vh", background: C.bg, color: C.text, display: "flex" }} className="md:flex-row flex-col">
       <GlobalFX />
       <aside
-        className="hidden md:flex"
-        style={{ width: 232, flexDirection: "column", borderRight: `1px solid ${C.borderSoft}`, padding: 20 }}
+        className="hidden md:flex md:w-[76px] lg:w-60"
+        style={{ flexDirection: "column", borderRight: `1px solid ${C.borderSoft}`, padding: 20, flexShrink: 0 }}
       >
-        <Logo />
-        <p style={{ fontSize: 11, color: C.mutedDim, marginTop: 4, marginBottom: 12 }}>Automobile marketplace</p>
-        {isMinor ? <MinorChip /> : <SecureChip />}
+        <div className="lg:block hidden"><Logo /></div>
+        <div className="lg:hidden flex justify-center"><Logo size={22} /></div>
+        <p className="hidden lg:block" style={{ fontSize: 11, color: C.mutedDim, marginTop: 4, marginBottom: 12 }}>
+          Automobile marketplace
+        </p>
+        <div className="hidden lg:flex" style={{ marginTop: 8 }}>
+          {isRestricted ? <RestrictedChip /> : isMinor ? <MinorChip /> : <SecureChip />}
+        </div>
         <nav style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 24 }}>
           {items.map((it) => (
             <button
@@ -600,18 +616,30 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor }) {
               onMouseEnter={() => setNavHover(it.id)}
               onMouseLeave={() => setNavHover(null)}
               style={navBtnStyle(it.id)}
+              className="lg:justify-start justify-center"
+              title={it.label}
             >
-              <it.icon size={17} />
-              {it.label}
+              <it.icon size={18} />
+              <span className="hidden lg:inline">{it.label}</span>
             </button>
           ))}
         </nav>
         <div style={{ marginTop: "auto", paddingTop: 20, borderTop: `1px solid ${C.borderSoft}` }}>
-          <p style={{ fontSize: 13, fontWeight: 800 }}>{user.name}</p>
-          <p style={{ fontSize: 11, color: C.mutedDim, marginBottom: 10, fontFamily: MONO }}>@{user.username}</p>
-          <Btn variant="subtle" onClick={onLogout} style={{ padding: 0 }}>
-            <LogOut size={13} /> Log out
-          </Btn>
+          <div className="hidden lg:block">
+            <p style={{ fontSize: 13, fontWeight: 800 }}>{user.name}</p>
+            <p style={{ fontSize: 11, color: C.mutedDim, marginBottom: 10, fontFamily: MONO }}>@{user.username}</p>
+          </div>
+          <button
+            onClick={onLogout}
+            title="Log out"
+            className="lg:justify-start justify-center"
+            style={{ display: "flex", alignItems: "center", gap: 8, background: "none", border: "none", color: C.muted, cursor: "pointer", width: "100%", padding: 0 }}
+          >
+            <LogOut size={15} />
+            <span className="hidden lg:inline" style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+              Log out
+            </span>
+          </button>
         </div>
       </aside>
 
@@ -624,7 +652,7 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor }) {
         }}
       >
         <Logo size={20} />
-        {isMinor ? <MinorChip /> : <SecureChip />}
+        {isRestricted ? <RestrictedChip /> : isMinor ? <MinorChip /> : <SecureChip />}
         <button onClick={onLogout} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
           <LogOut size={18} />
         </button>
@@ -663,9 +691,10 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor }) {
 }
 
 /* ---------------------------------------------------------- HOME / MARKET */
-function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMinor }) {
+function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMinor, isRestricted, onViewProfile }) {
   const [query, setQuery] = useState("");
   const [cat, setCat] = useState("all");
+  const [reportTarget, setReportTarget] = useState(null);
 
   const filtered = listings.filter((l) => {
     const matchesCat = cat === "all" || l.category === cat;
@@ -724,9 +753,19 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
         </div>
       )}
 
-      <div className="md:flex" style={{ gap: 28, alignItems: "flex-start" }}>
+      {isRestricted && (
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: C.warnDim, border: `1px solid rgba(255,138,101,0.4)`, borderRadius: 12, padding: "12px 14px", marginBottom: 18 }}>
+          <Flag size={16} color={C.warn} style={{ flexShrink: 0, marginTop: 1 }} />
+          <p style={{ fontSize: 12, color: C.warn, lineHeight: 1.5 }}>
+            Your account is restricted after multiple member complaints. You can still browse and
+            message, but buying and selling are paused pending review.
+          </p>
+        </div>
+      )}
+
+      <div className="lg:flex" style={{ gap: 28, alignItems: "flex-start" }}>
         {/* Desktop category rail */}
-        <aside className="hidden md:block" style={{ width: 176, flexShrink: 0, position: "sticky", top: 24 }}>
+        <aside className="hidden lg:block" style={{ width: 176, flexShrink: 0, position: "sticky", top: 24 }}>
           <p style={{ fontFamily: MONO, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: C.mutedDim, marginBottom: 8, paddingLeft: 10 }}>
             Categories
           </p>
@@ -750,7 +789,7 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
           </div>
 
           {/* Mobile category chips */}
-          <div className="md:hidden" style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 8, marginBottom: 16 }}>
+          <div className="lg:hidden" style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 8, marginBottom: 16 }}>
             <button onClick={() => setCat("all")} style={chipStyle(cat === "all")}>All</button>
             {CATEGORIES.map((c) => (
               <button key={c.id} onClick={() => setCat(c.id)} style={chipStyle(cat === c.id)}>{c.label}</button>
@@ -770,7 +809,7 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
                 return (
                   <div
                     key={l.id}
-                    className="sm:flex-row flex-col"
+                    className="md:flex-row flex-col"
                     style={{ display: "flex", gap: 14, background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14 }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
@@ -794,7 +833,36 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
                       </div>
                       <h3 style={{ fontWeight: 800, fontSize: 14, marginBottom: 3 }}>{l.title}</h3>
                       <p style={{ color: C.muted, fontSize: 12, lineHeight: 1.5, marginBottom: 4 }}>{l.description}</p>
-                      <span style={{ fontSize: 10, color: C.mutedDim, fontFamily: MONO }}>@{l.seller}</span>
+                      {l.location?.lat && (
+                        <a
+                          href={googleMapsDirectionsUrl(l.location.lat, l.location.lng)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: C.accent, marginBottom: 4, textDecoration: "none" }}
+                        >
+                          <MapPin size={11} />
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 240 }}>
+                            {l.location.address}
+                          </span>
+                        </a>
+                      )}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <button
+                          onClick={() => onViewProfile(l.seller)}
+                          style={{ background: "none", border: "none", color: C.mutedDim, fontFamily: MONO, fontSize: 10, cursor: "pointer", padding: 0, textDecoration: "underline", textUnderlineOffset: 2 }}
+                        >
+                          @{l.seller}
+                        </button>
+                        {l.seller !== currentUser.username && (
+                          <button
+                            onClick={() => setReportTarget(l)}
+                            title="Report this listing"
+                            style={{ background: "none", border: "none", color: C.mutedDim, cursor: "pointer", padding: 0, display: "flex", alignItems: "center" }}
+                          >
+                            <Flag size={11} />
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", justifyContent: "space-between", gap: 8, flexShrink: 0, minWidth: 128 }}>
@@ -806,10 +874,10 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
                               <Btn
                                 style={{ flex: 1, padding: "8px 6px", fontSize: 10.5 }}
                                 onClick={() => onBuyNow(l)}
-                                disabled={isMinor}
-                                title={isMinor ? "Buying unlocks at 18" : undefined}
+                                disabled={isMinor || isRestricted}
+                                title={isMinor ? "Buying unlocks at 18" : isRestricted ? "Buying is paused while your account is under review" : undefined}
                               >
-                                {isMinor ? <Lock size={12} /> : <CreditCard size={12} />} Buy
+                                {isMinor || isRestricted ? <Lock size={12} /> : <CreditCard size={12} />} Buy
                               </Btn>
                               <Btn variant="ghost" style={{ padding: "8px 10px" }} onClick={() => onOpenChat(l.seller)} title="Message seller">
                                 <MessageCircle size={13} />
@@ -830,20 +898,271 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
           )}
         </div>
       </div>
+
+      {reportTarget && (
+        <ReportModal listing={reportTarget} onClose={() => setReportTarget(null)} />
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------- REPORT MODAL */
+/* ---------------------------------------------------------- PUBLIC PROFILE (no personal info) */
+function PublicProfileModal({ username, allListings, currentUser, onClose, onMessage }) {
+  const [profile, setProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    getPublicProfile(username)
+      .then((p) => { if (active) setProfile(p); })
+      .catch((err) => { if (active) setError(err?.message || "Couldn't load this profile."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [username]);
+
+  const theirListings = allListings.filter((l) => l.seller === username && l.status !== "sold");
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.72)", zIndex: 30, display: "flex", alignItems: "flex-end", justifyContent: "center" }} className="md:items-center">
+      <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 18, width: "100%", maxWidth: 420, maxHeight: "85vh", overflowY: "auto" }} className="hunt-scroll">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: `1px solid ${C.borderSoft}`, position: "sticky", top: 0, background: C.bg }}>
+          <h2 style={{ fontWeight: 900, fontSize: 17 }}>Profile</h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}><X size={20} /></button>
+        </div>
+
+        <div style={{ padding: "20px" }}>
+          {loading ? (
+            <p style={{ color: C.mutedDim, fontSize: 13, fontFamily: MONO }}>Loading...</p>
+          ) : error || !profile ? (
+            <p style={{ color: C.warn, fontSize: 13 }}>{error || "This member couldn't be found."}</p>
+          ) : (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20 }}>
+                <div style={{ width: 56, height: 56, borderRadius: 999, background: C.accent, color: "#0a0a0a", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 20, flexShrink: 0 }}>
+                  {profile.name?.[0]?.toUpperCase() || "?"}
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <h3 style={{ fontSize: 17, fontWeight: 900 }}>{profile.name}</h3>
+                  <p style={{ color: C.muted, fontSize: 12, fontFamily: MONO }}>@{profile.username}</p>
+                </div>
+              </div>
+
+              <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", marginBottom: 18 }}>
+                <p style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.mutedDim, marginBottom: 3 }}>Member since</p>
+                <p style={{ fontSize: 13, fontWeight: 700 }}>{new Date(profile.createdAt).toLocaleDateString()}</p>
+              </div>
+
+              {profile.username !== currentUser.username && (
+                <Btn style={{ width: "100%", marginBottom: 20 }} onClick={() => { onMessage(profile.username); onClose(); }}>
+                  <MessageCircle size={14} /> Message @{profile.username}
+                </Btn>
+              )}
+
+              <h4 style={{ fontSize: 11, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.muted, marginBottom: 10 }}>
+                Active listings ({theirListings.length})
+              </h4>
+              {theirListings.length === 0 ? (
+                <p style={{ color: C.mutedDim, fontSize: 13 }}>Nothing listed right now.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {theirListings.map((l) => (
+                    <div key={l.id} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                      <p style={{ fontWeight: 700, fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.title}</p>
+                      <span style={{ color: C.gold, fontWeight: 900, fontSize: 12.5, flexShrink: 0 }}>{l.price ? `$${l.price}` : "Contact"}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <p style={{ fontSize: 10.5, color: C.mutedDim, lineHeight: 1.6, marginTop: 20 }}>
+                HunT only shows a member's name, username, and listings here — never their email,
+                phone, or date of birth.
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReportModal({ listing, onClose }) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!reason.trim()) { setError("Say what happened so this can be reviewed."); return; }
+    setError("");
+    setBusy(true);
+    try {
+      await fileReport({ targetUsername: listing.seller, listingId: listing.id, reason: reason.trim() });
+      setDone(true);
+    } catch (err) {
+      setError(err?.message || "Couldn't send the report. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.72)", zIndex: 30, display: "flex", alignItems: "flex-end", justifyContent: "center" }} className="md:items-center">
+      <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 18, width: "100%", maxWidth: 420 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: `1px solid ${C.borderSoft}` }}>
+          <h2 style={{ fontWeight: 900, fontSize: 17, display: "flex", alignItems: "center", gap: 8 }}>
+            <Flag size={16} color={C.warn} /> Report listing
+          </h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}><X size={20} /></button>
+        </div>
+        <div style={{ padding: "16px 20px" }}>
+          {done ? (
+            <div style={{ textAlign: "center", padding: "12px 0" }}>
+              <CheckCircle size={36} color={C.accent} style={{ margin: "0 auto 10px" }} />
+              <p style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Report sent</p>
+              <p style={{ color: C.muted, fontSize: 12, marginBottom: 20, lineHeight: 1.5 }}>
+                Thanks — this goes to review. Accounts are only ever restricted after multiple
+                separate members report the same issue, never from a single report.
+              </p>
+              <Btn onClick={onClose} style={{ width: "100%" }}>Done</Btn>
+            </div>
+          ) : (
+            <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px" }}>
+                <p style={{ fontWeight: 700, fontSize: 13 }}>{listing.title}</p>
+                <p style={{ color: C.mutedDim, fontSize: 11, fontFamily: MONO }}>@{listing.seller}</p>
+              </div>
+              <Field as="textarea" rows={4} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="What happened? (scam attempt, fake listing, harassment, etc.)" style={{ resize: "none" }} />
+              {error && <ErrorNote>{error}</ErrorNote>}
+              <Btn type="submit" disabled={busy}>{busy ? "Sending..." : "Send report"}</Btn>
+            </form>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------- LOCATION PICKER */
+function LocationPicker({ value, onChange }) {
+  const [query, setQuery] = useState(value?.address || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const findAddress = async (e) => {
+    e.preventDefault();
+    if (!query.trim()) return;
+    setError("");
+    setBusy(true);
+    try {
+      const loc = await geocodeAddress(query.trim());
+      onChange(loc);
+      setQuery(loc.address);
+    } catch (err) {
+      setError(err?.message || "Couldn't find that location.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const useMyLocation = async () => {
+    setError("");
+    setBusy(true);
+    try {
+      const { lat, lng } = await getCurrentPosition();
+      const loc = await reverseGeocode(lat, lng);
+      onChange(loc);
+      setQuery(loc.address);
+    } catch (err) {
+      setError(err?.message || "Couldn't get your location.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clear = () => {
+    onChange(null);
+    setQuery("");
+    setError("");
+  };
+
+  return (
+    <div>
+      <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, fontFamily: MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: C.muted, marginLeft: 4, marginBottom: 6 }}>
+        <MapPin size={10} /> Pickup location (optional)
+      </label>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <Field
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Address, cross streets, or area"
+        />
+        <Btn type="button" variant="ghost" onClick={findAddress} disabled={busy} style={{ flexShrink: 0, padding: "0 14px" }}>
+          Find
+        </Btn>
+      </div>
+      <button
+        type="button"
+        onClick={useMyLocation}
+        disabled={busy}
+        style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", color: C.accent, fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0, marginBottom: 10 }}
+      >
+        <Navigation size={12} /> {busy ? "Working..." : "Use my current location"}
+      </button>
+
+      {error && <div style={{ marginBottom: 10 }}><ErrorNote>{error}</ErrorNote></div>}
+
+      {value?.lat && (
+        <div style={{ borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}`, marginBottom: 8 }}>
+          <iframe
+            title="Pickup location preview"
+            src={googleMapsEmbedUrl(value.lat, value.lng)}
+            width="100%"
+            height="180"
+            style={{ border: 0, display: "block" }}
+            loading="lazy"
+          />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: C.panel }}>
+            <span style={{ fontSize: 11, color: C.muted, lineHeight: 1.4, paddingRight: 8 }}>{value.address}</span>
+            <button type="button" onClick={clear} style={{ background: "none", border: "none", color: C.mutedDim, cursor: "pointer", flexShrink: 0 }}>
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 /* ---------------------------------------------------------- POST LISTING */
-function PostScreen({ user, onPosted, isMinor }) {
+function PostScreen({ user, onPosted, isMinor, isRestricted }) {
   const [type, setType] = useState("item");
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState(CATEGORIES[0].id);
   const [price, setPrice] = useState("");
   const [description, setDescription] = useState("");
-  const [location, setLocation] = useState("");
+  const [location, setLocation] = useState(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+
+  if (isRestricted) {
+    return (
+      <div style={{ maxWidth: 460, margin: "0 auto", padding: "24px 16px" }}>
+        <div style={{ border: `1px solid rgba(255,107,74,0.4)`, background: C.warnDim, borderRadius: 14, padding: "28px 20px", textAlign: "center" }}>
+          <Flag size={28} color={C.warn} style={{ margin: "0 auto 12px" }} />
+          <h2 style={{ fontWeight: 900, fontSize: 16, marginBottom: 6, color: C.text }}>Selling is paused</h2>
+          <p style={{ color: C.warn, fontSize: 13, lineHeight: 1.6 }}>
+            Your account has multiple member complaints against it, so posting is paused pending
+            review. You can still browse and message other members.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (isMinor) {
     return (
@@ -871,12 +1190,12 @@ function PostScreen({ user, onPosted, isMinor }) {
       const listing = {
         id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         type, category, title: title.trim(), price: price ? Number(price) : null,
-        description: description.trim(), location: location.trim(),
+        description: description.trim(), location,
         seller: user.username, status: "active", createdAt: Date.now(),
       };
       arr.push(listing);
       await window.storage.set("hunt:listings", JSON.stringify(arr), true);
-      setTitle(""); setPrice(""); setDescription(""); setLocation("");
+      setTitle(""); setPrice(""); setDescription(""); setLocation(null);
       setDone(true);
       onPosted(arr);
       setTimeout(() => setDone(false), 2500);
@@ -913,7 +1232,7 @@ function PostScreen({ user, onPosted, isMinor }) {
           {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
         </Field>
         <Field value={price} onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ""))} placeholder={type === "item" ? "Price ($, optional)" : "Rate ($, optional)"} />
-        <Field value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Location (city, optional)" />
+        <LocationPicker value={location} onChange={setLocation} />
         <Field as="textarea" rows={4} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Describe the condition, specs, or scope of work..." style={{ resize: "none" }} />
         <Btn type="submit" disabled={busy}>{busy ? "Posting..." : "Post listing"}</Btn>
         {done && <p style={{ textAlign: "center", fontSize: 12, color: C.accent, fontWeight: 800 }}>Listing is live ✓</p>}
@@ -923,7 +1242,7 @@ function PostScreen({ user, onPosted, isMinor }) {
 }
 
 /* ---------------------------------------------------------- CHAT */
-function ChatScreen({ user, openWith, setOpenWith }) {
+function ChatScreen({ user, openWith, setOpenWith, onViewProfile }) {
   const [conversations, setConversations] = useState([]);
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
@@ -992,7 +1311,12 @@ function ChatScreen({ user, openWith, setOpenWith }) {
           <div style={{ width: 32, height: 32, borderRadius: 999, background: C.accent, color: "#0a0a0a", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 12 }}>
             {openWith[0]?.toUpperCase()}
           </div>
-          <span style={{ fontWeight: 800, fontSize: 13, fontFamily: MONO }}>@{openWith}</span>
+          <button
+            onClick={() => onViewProfile(openWith)}
+            style={{ background: "none", border: "none", fontWeight: 800, fontSize: 13, fontFamily: MONO, color: C.text, cursor: "pointer", padding: 0, textDecoration: "underline", textUnderlineOffset: 2 }}
+          >
+            @{openWith}
+          </button>
         </div>
         <div className="hunt-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: 8 }}>
           {messages.length === 0 && (
@@ -1185,9 +1509,10 @@ function CheckoutModal({ listing, buyer, onClose, onComplete }) {
 }
 
 /* ---------------------------------------------------------- PROFILE */
-function ProfileScreen({ user, listings, onLogout }) {
+function ProfileScreen({ user, listings, onLogout, onListingsChanged }) {
   const mine = listings.filter((l) => l.seller === user.username);
   const [orders, setOrders] = useState([]);
+  const [deletingId, setDeletingId] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -1200,6 +1525,23 @@ function ProfileScreen({ user, listings, onLogout }) {
 
   const myPurchases = orders.filter((o) => o.buyer === user.username);
   const mySales = orders.filter((o) => o.seller === user.username);
+
+  const removeListing = async (listingId) => {
+    if (!window.confirm("Remove this listing? This can't be undone.")) return;
+    setDeletingId(listingId);
+    try {
+      const res = await window.storage.get("hunt:listings", true).catch(() => null);
+      const arr = res ? JSON.parse(res.value) : [];
+      const updated = arr.filter((l) => l.id !== listingId);
+      await window.storage.set("hunt:listings", JSON.stringify(updated), true);
+      onListingsChanged(updated);
+    } catch (err) {
+      console.error("Failed to remove listing:", err);
+      window.alert("Couldn't remove that listing. Try again.");
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const Section = ({ title, count, children, empty }) => (
     <div style={{ marginBottom: 24 }}>
@@ -1256,14 +1598,28 @@ function ProfileScreen({ user, listings, onLogout }) {
 
       <Section title="My listings" count={mine.length} empty="You haven't posted anything yet.">
         {mine.map((l) => (
-          <Row
-            key={l.id}
-            title={l.title}
-            sub={`${l.price ? `$${l.price}` : "Contact for rate"} · ${timeAgo(l.createdAt)}`}
-            badge={l.status === "sold" && (
-              <span style={{ fontSize: 10, textTransform: "uppercase", fontWeight: 800, color: "#0a0a0a", background: C.accent, padding: "2px 6px", borderRadius: 4, flexShrink: 0 }}>Sold</span>
-            )}
-          />
+          <div key={l.id} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <p style={{ fontWeight: 800, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.title}</p>
+              <p style={{ color: C.mutedDim, fontSize: 11, fontFamily: MONO }}>
+                {l.price ? `$${l.price}` : "Contact for rate"} · {timeAgo(l.createdAt)}
+              </p>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+              {l.status === "sold" ? (
+                <span style={{ fontSize: 10, textTransform: "uppercase", fontWeight: 800, color: "#0a0a0a", background: C.accent, padding: "2px 6px", borderRadius: 4 }}>Sold</span>
+              ) : (
+                <button
+                  onClick={() => removeListing(l.id)}
+                  disabled={deletingId === l.id}
+                  title="Remove listing"
+                  style={{ background: "none", border: "none", color: C.warn, cursor: "pointer", padding: 4, display: "flex", alignItems: "center", opacity: deletingId === l.id ? 0.5 : 1 }}
+                >
+                  <Trash2 size={15} />
+                </button>
+              )}
+            </div>
+          </div>
         ))}
       </Section>
 
@@ -1289,11 +1645,34 @@ function ProfileScreen({ user, listings, onLogout }) {
 /* ---------------------------------------------------------- ROOT */
 export default function HunT() {
   const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [recoveryMode, setRecoveryMode] = useState(false);
   const [screen, setScreen] = useState("home");
   const [listings, setListings] = useState([]);
   const [loadingListings, setLoadingListings] = useState(true);
   const [openChatWith, setOpenChatWith] = useState(null);
   const [checkoutListing, setCheckoutListing] = useState(null);
+  const [viewProfileUsername, setViewProfileUsername] = useState(null);
+
+  // Bootstrap whatever session already exists (e.g. page refresh), then
+  // keep `user` in sync with real Supabase Auth state going forward.
+  useEffect(() => {
+    let active = true;
+    getSessionUser()
+      .then((u) => { if (active) setUser(u); })
+      .catch((err) => console.error("Failed to load session:", err))
+      .finally(() => { if (active) setAuthLoading(false); });
+
+    const unsubscribe = onAuthChange((u, event) => {
+      if (event === "PASSWORD_RECOVERY") {
+        setRecoveryMode(true);
+        return;
+      }
+      setUser(u);
+    });
+
+    return () => { active = false; unsubscribe(); };
+  }, []);
 
   const loadListings = useCallback(async () => {
     setLoadingListings(true);
@@ -1310,20 +1689,49 @@ export default function HunT() {
     return () => clearInterval(iv);
   }, [user, loadListings]);
 
+  if (authLoading) {
+    return (
+      <div style={{ minHeight: "100vh", background: C.bg, color: C.mutedDim, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: MONO, fontSize: 12 }}>
+        Loading...
+      </div>
+    );
+  }
+
+  if (recoveryMode) {
+    return (
+      <ResetPasswordScreen
+        onDone={() => {
+          setRecoveryMode(false);
+          // Force a clean re-check of the session/profile after the
+          // password update so the app doesn't sit on stale state.
+          getSessionUser().then(setUser).catch(() => setUser(null));
+        }}
+      />
+    );
+  }
+
   if (!user) return <AuthScreen onLogin={setUser} />;
 
   const age = calcAge(user.dob);
   const isMinor = age !== null && age < 18;
+  const isRestricted = !!user.restricted;
 
   const goChat = (target) => { setScreen("chat"); setOpenChatWith(target); };
+
+  const handleLogout = async () => {
+    try { await signOut(); } catch (err) { console.error(err); }
+    setUser(null);
+    setScreen("home");
+  };
 
   return (
     <NavShell
       user={user}
       screen={screen}
       setScreen={(s) => { setScreen(s); if (s !== "chat") setOpenChatWith(null); }}
-      onLogout={() => { setUser(null); setScreen("home"); }}
+      onLogout={handleLogout}
       isMinor={isMinor}
+      isRestricted={isRestricted}
     >
       {screen === "home" && (
         <HomeScreen
@@ -1333,14 +1741,28 @@ export default function HunT() {
           onBuyNow={(l) => setCheckoutListing(l)}
           currentUser={user}
           isMinor={isMinor}
+          isRestricted={isRestricted}
+          onViewProfile={setViewProfileUsername}
         />
       )}
-      {screen === "post" && <PostScreen user={user} onPosted={(arr) => setListings(arr)} isMinor={isMinor} />}
-      {screen === "chat" && <ChatScreen user={user} openWith={openChatWith} setOpenWith={setOpenChatWith} />}
-      {screen === "profile" && <ProfileScreen user={user} listings={listings} onLogout={() => setUser(null)} />}
+      {screen === "post" && <PostScreen user={user} onPosted={(arr) => setListings(arr)} isMinor={isMinor} isRestricted={isRestricted} />}
+      {screen === "chat" && (
+        <ChatScreen user={user} openWith={openChatWith} setOpenWith={setOpenChatWith} onViewProfile={setViewProfileUsername} />
+      )}
+      {screen === "profile" && <ProfileScreen user={user} listings={listings} onLogout={handleLogout} onListingsChanged={(arr) => setListings(arr)} />}
 
-      {checkoutListing && !isMinor && (
+      {checkoutListing && !isMinor && !isRestricted && (
         <CheckoutModal listing={checkoutListing} buyer={user} onClose={() => setCheckoutListing(null)} onComplete={(u) => setListings(u)} />
+      )}
+
+      {viewProfileUsername && (
+        <PublicProfileModal
+          username={viewProfileUsername}
+          allListings={listings}
+          currentUser={user}
+          onClose={() => setViewProfileUsername(null)}
+          onMessage={goChat}
+        />
       )}
     </NavShell>
   );
