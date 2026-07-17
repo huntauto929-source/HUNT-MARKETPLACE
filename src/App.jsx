@@ -145,6 +145,17 @@ function chatKey(a, b) {
   return "hunt:chat:" + [a, b].sort().join("__");
 }
 
+// Shared by both the seller's "Mark sold" (Profile) and the buyer's
+// "Mark as sold" (Market) actions — either side of a deal can flip
+// a listing's status once they've arranged payment between themselves.
+async function setListingStatus(listingId, status) {
+  const res = await window.storage.get("hunt:listings", true).catch(() => null);
+  const arr = res ? JSON.parse(res.value) : [];
+  const updated = arr.map((l) => (l.id === listingId ? { ...l, status } : l));
+  await window.storage.set("hunt:listings", JSON.stringify(updated), true);
+  return updated;
+}
+
 /* ---------------------------------------------------------- GLOBAL STYLE TAG */
 function GlobalFX() {
   return (
@@ -1163,7 +1174,7 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRest
 }
 
 /* ---------------------------------------------------------- HOME / MARKET */
-function HomeScreen({ listings, loading, onOpenChat, currentUser, isMinor, isRestricted, ageUnverified, onViewProfile, deepLinkListingId }) {
+function HomeScreen({ listings, loading, onOpenChat, currentUser, isMinor, isRestricted, ageUnverified, onViewProfile, deepLinkListingId, onListingsChanged }) {
   const [query, setQuery] = useState("");
   const [cat, setCat] = useState("all");
   const [reportTarget, setReportTarget] = useState(null);
@@ -1171,6 +1182,21 @@ function HomeScreen({ listings, loading, onOpenChat, currentUser, isMinor, isRes
   const [commentCounts, setCommentCounts] = useState({});
   const [commentsTarget, setCommentsTarget] = useState(null);
   const [highlightId, setHighlightId] = useState(deepLinkListingId || null);
+  const [markingSoldId, setMarkingSoldId] = useState(null);
+
+  const markSold = async (listing) => {
+    if (!window.confirm(`Mark "${listing.title}" as sold? Do this once you and @${listing.seller} have arranged payment — it removes the listing from active browsing.`)) return;
+    setMarkingSoldId(listing.id);
+    try {
+      const updated = await setListingStatus(listing.id, "sold");
+      onListingsChanged?.(updated);
+    } catch (err) {
+      console.error("Failed to mark listing sold:", err);
+      window.alert("Couldn't update that listing. Try again.");
+    } finally {
+      setMarkingSoldId(null);
+    }
+  };
 
   useEffect(() => {
     const ids = listings.map((l) => l.id);
@@ -1395,6 +1421,15 @@ function HomeScreen({ listings, loading, onOpenChat, currentUser, isMinor, isRes
                         <div style={{ display: "flex", gap: 6, width: "100%" }}>
                           <Btn style={{ flex: 1, padding: "8px 6px", fontSize: 10.5 }} onClick={() => onOpenChat(l.seller)}>
                             <MessageCircle size={12} /> Message
+                          </Btn>
+                          <Btn
+                            variant="ghost"
+                            style={{ padding: "8px 10px" }}
+                            onClick={() => markSold(l)}
+                            disabled={markingSoldId === l.id}
+                            title="Mark as sold — you bought this"
+                          >
+                            <CheckCircle size={13} />
                           </Btn>
                         </div>
                       )}
@@ -3012,10 +3047,7 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileU
   const toggleSold = async (listingId, nextStatus) => {
     setTogglingSoldId(listingId);
     try {
-      const res = await window.storage.get("hunt:listings", true).catch(() => null);
-      const arr = res ? JSON.parse(res.value) : [];
-      const updated = arr.map((l) => (l.id === listingId ? { ...l, status: nextStatus } : l));
-      await window.storage.set("hunt:listings", JSON.stringify(updated), true);
+      const updated = await setListingStatus(listingId, nextStatus);
       onListingsChanged(updated);
     } catch (err) {
       console.error("Failed to update listing status:", err);
@@ -3024,6 +3056,7 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileU
       setTogglingSoldId(null);
     }
   };
+
 
   const Section = ({ title, count, children, empty }) => (
     <div style={{ marginBottom: 24 }}>
@@ -3480,6 +3513,7 @@ export default function HunT() {
           ageUnverified={ageUnverified}
           onViewProfile={setViewProfileUsername}
           deepLinkListingId={deepLinkListingId}
+          onListingsChanged={(arr) => setListings(arr)}
         />
       )}
       {screen === "post" && <PostScreen user={user} onPosted={(arr) => setListings(arr)} isMinor={isMinor} isRestricted={isRestricted} ageUnverified={ageUnverified} />}
