@@ -63,4 +63,24 @@ export async function deleteListingPhotos(urls) {
   if (error) throw error;
 }
 
+export async function uploadAvatar(file) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error("You need to be logged in to update your photo.");
+  validatePhotoFiles([file], 0);
+
+  // Fixed path (no extension) so re-uploading overwrites in place —
+  // upsert — instead of piling up old avatar files. contentType is
+  // set explicitly so the browser renders it correctly regardless.
+  const path = `${session.user.id}/avatar`;
+  const { error } = await supabase.storage.from("listing-photos").upload(path, file, {
+    cacheControl: "3600",
+    upsert: true,
+    contentType: file.type,
+  });
+  if (error) throw error;
+  const { data } = supabase.storage.from("listing-photos").getPublicUrl(path);
+  // Cache-bust: same URL every time, so force a fresh fetch.
+  return `${data.publicUrl}?t=${Date.now()}`;
+}
+
 export { MAX_PHOTOS };

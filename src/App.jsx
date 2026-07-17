@@ -4,13 +4,19 @@ import {
   Wrench, ShieldCheck, Send, Car, Fuel, Clock, AlertTriangle,
   CreditCard, CheckCircle, Lock, Package, Shield, Radio, Flag,
   MapPin, Trash2, Navigation, Star, Pencil, Image as ImageIcon, Bell,
+  Heart, MessageSquare, Users, Globe, EyeOff, UserPlus, UserCheck, Camera,
 } from "lucide-react";
 import { signUp, signIn, signOut, sendPasswordReset, updatePassword, updateProfile, getSessionUser, onAuthChange, fileReport, getPublicProfile, submitReview, getReviews, getMyReviewedListingIds } from "./authClient.js";
-import { uploadListingPhotos, deleteListingPhotos, validatePhotoFiles, MAX_PHOTOS } from "./photos.js";
+import { uploadListingPhotos, deleteListingPhotos, validatePhotoFiles, MAX_PHOTOS, uploadAvatar } from "./photos.js";
 import {
   getLastRead, setLastRead, notificationsSupported, notificationPermission,
   requestNotificationPermission, maybeNotifyNewMessage,
 } from "./notifications.js";
+import {
+  sendFriendRequest, respondFriendRequest, removeFriend, getFriendState,
+  createPost, deletePost, getFeed, getAvatarsForUsernames,
+  toggleLike, getLikeSummary, getComments, addComment, deleteComment, getCommentCounts,
+} from "./feed.js";
 import { geocodeAddress, reverseGeocode, getCurrentPosition, googleMapsEmbedUrl, googleMapsDirectionsUrl } from "./geo.js";
 
 /* ===========================================================
@@ -391,7 +397,157 @@ function StarRating({ value, onChange, size = 18, readOnly = false }) {
   );
 }
 
-/* ---------------------------------------------------------- AUTH SCREEN */
+/* ---------------------------------------------------------- AVATAR */
+function Avatar({ name, url, size = 40, onClick }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        width: size, height: size, borderRadius: 999, background: C.accent, color: "#0a0a0a",
+        display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900,
+        fontSize: Math.round(size * 0.42), flexShrink: 0, overflow: "hidden",
+        cursor: onClick ? "pointer" : "default",
+      }}
+    >
+      {url ? (
+        <img src={url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+      ) : (
+        name?.[0]?.toUpperCase() || "?"
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------- LIKE BUTTON */
+function LikeButton({ targetType, targetId, initialCount = 0, initialLiked = false, size = 13 }) {
+  const [liked, setLiked] = useState(initialLiked);
+  const [count, setCount] = useState(initialCount);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { setLiked(initialLiked); setCount(initialCount); }, [initialLiked, initialCount]);
+
+  const toggle = async (e) => {
+    e.stopPropagation();
+    if (busy) return;
+    setBusy(true);
+    const wasLiked = liked;
+    setLiked(!wasLiked);
+    setCount((c) => c + (wasLiked ? -1 : 1));
+    try {
+      await toggleLike(targetType, targetId);
+    } catch (err) {
+      console.error("Like failed:", err);
+      setLiked(wasLiked);
+      setCount((c) => c + (wasLiked ? 1 : -1));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={toggle}
+      disabled={busy}
+      style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", cursor: "pointer", padding: 0, color: liked ? C.warn : C.mutedDim }}
+    >
+      <Heart size={size} fill={liked ? C.warn : "transparent"} />
+      <span style={{ fontSize: size - 1, fontFamily: MONO }}>{count}</span>
+    </button>
+  );
+}
+
+/* ---------------------------------------------------------- COMMENTS MODAL (shared: listings + feed posts) */
+function CommentsModal({ targetType, targetId, title, currentUser, onClose, onCountChange }) {
+  const [comments, setComments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const c = await getComments(targetType, targetId);
+      setComments(c);
+      onCountChange?.(c.length);
+    } catch (err) { console.error(err); }
+    finally { setLoading(false); }
+  }, [targetType, targetId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const text = draft.trim();
+    if (!text) return;
+    setBusy(true);
+    try {
+      await addComment(targetType, targetId, text);
+      setDraft("");
+      await load();
+    } catch (err) {
+      window.alert(err?.message || "Couldn't post that comment.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id) => {
+    try {
+      await deleteComment(id);
+      await load();
+    } catch (err) {
+      window.alert(err?.message || "Couldn't delete that comment.");
+    }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.72)", zIndex: 30, display: "flex", alignItems: "flex-end", justifyContent: "center" }} className="md:items-center">
+      <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 18, width: "100%", maxWidth: 420, maxHeight: "80vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: `1px solid ${C.borderSoft}` }}>
+          <h2 style={{ fontWeight: 900, fontSize: 15, display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+            <MessageSquare size={15} color={C.accent} style={{ flexShrink: 0 }} />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title || "Comments"}</span>
+          </h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", flexShrink: 0 }}><X size={20} /></button>
+        </div>
+
+        <div className="hunt-scroll" style={{ flex: 1, overflowY: "auto", padding: "12px 20px" }}>
+          {loading ? (
+            <p style={{ color: C.mutedDim, fontSize: 13, fontFamily: MONO }}>Loading...</p>
+          ) : comments.length === 0 ? (
+            <p style={{ color: C.mutedDim, fontSize: 13, padding: "20px 0", textAlign: "center" }}>No comments yet — say something.</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {comments.map((c) => (
+                <div key={c.id} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <p style={{ fontSize: 12, fontFamily: MONO, color: C.mutedDim }}>
+                      @{c.authorUsername} <span style={{ marginLeft: 4 }}>{timeAgo(c.createdAt)}</span>
+                    </p>
+                    <p style={{ fontSize: 13.5, color: C.text, lineHeight: 1.4 }}>{c.text}</p>
+                  </div>
+                  {c.authorUsername === currentUser?.username && (
+                    <button onClick={() => remove(c.id)} title="Delete comment" style={{ background: "none", border: "none", color: C.mutedDim, cursor: "pointer", flexShrink: 0, padding: 2 }}>
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <form onSubmit={submit} style={{ display: "flex", gap: 8, padding: 12, borderTop: `1px solid ${C.borderSoft}` }}>
+          <Field value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Add a comment..." style={{ borderRadius: 999 }} />
+          <button type="submit" disabled={busy || !draft.trim()} style={{ background: C.accent, border: "none", borderRadius: 999, padding: 10, cursor: "pointer", flexShrink: 0, opacity: busy || !draft.trim() ? 0.5 : 1 }}>
+            <Send size={16} color="#0a0a0a" />
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+
 function AuthShell({ children }) {
   return (
     <div style={{ minHeight: "100vh", background: C.bg, color: C.text, display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>
@@ -669,6 +825,7 @@ function ResetPasswordScreen({ onDone }) {
 function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRestricted, ageUnverified, unreadTotal = 0 }) {
   const items = [
     { id: "home", label: "Market", icon: Search },
+    { id: "feed", label: "Feed", icon: Radio },
     { id: "post", label: "Sell", icon: Plus },
     { id: "chat", label: "Chats", icon: MessageCircle },
     { id: "profile", label: "Profile", icon: User },
@@ -811,6 +968,16 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
   const [query, setQuery] = useState("");
   const [cat, setCat] = useState("all");
   const [reportTarget, setReportTarget] = useState(null);
+  const [likeSummary, setLikeSummary] = useState({});
+  const [commentCounts, setCommentCounts] = useState({});
+  const [commentsTarget, setCommentsTarget] = useState(null);
+
+  useEffect(() => {
+    const ids = listings.map((l) => l.id);
+    if (!ids.length) return;
+    getLikeSummary("listing", ids).then(setLikeSummary).catch(() => {});
+    getCommentCounts("listing", ids).then(setCommentCounts).catch(() => {});
+  }, [listings]);
 
   const filtered = listings.filter((l) => {
     const matchesCat = cat === "all" || l.category === cat;
@@ -984,6 +1151,21 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
                           </button>
                         )}
                       </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 6 }}>
+                        <LikeButton
+                          targetType="listing"
+                          targetId={l.id}
+                          initialCount={likeSummary[l.id]?.count || 0}
+                          initialLiked={likeSummary[l.id]?.likedByMe || false}
+                        />
+                        <button
+                          onClick={() => setCommentsTarget(l)}
+                          style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", cursor: "pointer", padding: 0, color: C.mutedDim }}
+                        >
+                          <MessageSquare size={13} />
+                          <span style={{ fontSize: 12, fontFamily: MONO }}>{commentCounts[l.id] || 0}</span>
+                        </button>
+                      </div>
                     </div>
 
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", justifyContent: "space-between", gap: 8, flexShrink: 0, minWidth: 128 }}>
@@ -1022,6 +1204,17 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
 
       {reportTarget && (
         <ReportModal listing={reportTarget} onClose={() => setReportTarget(null)} />
+      )}
+
+      {commentsTarget && (
+        <CommentsModal
+          targetType="listing"
+          targetId={commentsTarget.id}
+          title={commentsTarget.title}
+          currentUser={currentUser}
+          onClose={() => setCommentsTarget(null)}
+          onCountChange={(n) => setCommentCounts((c) => ({ ...c, [commentsTarget.id]: n }))}
+        />
       )}
     </div>
   );
@@ -1099,6 +1292,22 @@ function PublicProfileModal({ username, allListings, currentUser, onClose, onMes
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [reviews, setReviews] = useState([]);
+  const [friendBusy, setFriendBusy] = useState(false);
+  const [friendSent, setFriendSent] = useState(false);
+  const [friendError, setFriendError] = useState("");
+
+  const sendFriend = async () => {
+    setFriendBusy(true);
+    setFriendError("");
+    try {
+      await sendFriendRequest(username);
+      setFriendSent(true);
+    } catch (err) {
+      setFriendError(err?.message || "Couldn't send that request.");
+    } finally {
+      setFriendBusy(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -1129,9 +1338,7 @@ function PublicProfileModal({ username, allListings, currentUser, onClose, onMes
           ) : (
             <>
               <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20 }}>
-                <div style={{ width: 56, height: 56, borderRadius: 999, background: C.accent, color: "#0a0a0a", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 20, flexShrink: 0 }}>
-                  {profile.name?.[0]?.toUpperCase() || "?"}
-                </div>
+                <Avatar name={profile.name} url={profile.avatarUrl} size={56} />
                 <div style={{ minWidth: 0 }}>
                   <h3 style={{ fontSize: 17, fontWeight: 900 }}>{profile.name}</h3>
                   <p style={{ color: C.muted, fontSize: 12, fontFamily: MONO }}>@{profile.username}</p>
@@ -1168,10 +1375,23 @@ function PublicProfileModal({ username, allListings, currentUser, onClose, onMes
               </div>
 
               {profile.username !== currentUser.username && (
-                <Btn style={{ width: "100%", marginBottom: 20 }} onClick={() => { onMessage(profile.username); onClose(); }}>
-                  <MessageCircle size={14} /> Message @{profile.username}
-                </Btn>
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                  <Btn style={{ flex: 1 }} onClick={() => { onMessage(profile.username); onClose(); }}>
+                    <MessageCircle size={14} /> Message
+                  </Btn>
+                  <Btn
+                    variant="ghost"
+                    style={{ flex: 1 }}
+                    onClick={sendFriend}
+                    disabled={friendBusy || friendSent}
+                  >
+                    {friendSent ? <UserCheck size={14} /> : <UserPlus size={14} />}
+                    {friendSent ? "Requested" : "Add friend"}
+                  </Btn>
+                </div>
               )}
+              {friendError && <div style={{ marginBottom: 12 }}><ErrorNote>{friendError}</ErrorNote></div>}
+              <div style={{ marginBottom: 12 }} />
 
               <h4 style={{ fontSize: 11, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.muted, marginBottom: 10 }}>
                 Active listings ({theirListings.length})
@@ -1775,7 +1995,328 @@ function ChatScreen({ user, openWith, setOpenWith, onViewProfile, unreadByUser =
   );
 }
 
-/* ---------------------------------------------------------- CHECKOUT */
+/* ---------------------------------------------------------- FEED */
+function visibilityIcon(v) {
+  if (v === "friends") return Users;
+  if (v === "private") return EyeOff;
+  return Globe;
+}
+function visibilityLabel(v) {
+  if (v === "friends") return "Friends";
+  if (v === "private") return "Only me";
+  return "Public";
+}
+
+function FriendsPanel({ friendState, onChanged }) {
+  const [open, setOpen] = useState(false);
+  const [addUsername, setAddUsername] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const { friends, incoming, outgoing } = friendState;
+
+  const submitAdd = async (e) => {
+    e.preventDefault();
+    const u = addUsername.trim();
+    if (!u) return;
+    setError("");
+    setBusy(true);
+    try {
+      await sendFriendRequest(u);
+      setAddUsername("");
+      onChanged();
+    } catch (err) {
+      setError(err?.message || "Couldn't send that request.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const respond = async (id, accept) => {
+    try {
+      await respondFriendRequest(id, accept);
+      onChanged();
+    } catch (err) {
+      window.alert(err?.message || "Couldn't update that request.");
+    }
+  };
+
+  const unfriend = async (id) => {
+    if (!window.confirm("Remove this friend?")) return;
+    try {
+      await removeFriend(id);
+      onChanged();
+    } catch (err) {
+      window.alert(err?.message || "Couldn't remove that friend.");
+    }
+  };
+
+  return (
+    <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 18 }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "none", border: "none", cursor: "pointer", color: C.text, padding: 0 }}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 800 }}>
+          <Users size={15} color={C.accent} /> Friends ({friends.length})
+          {incoming.length > 0 && (
+            <span style={{ background: C.warn, color: "#0a0a0a", fontSize: 10, fontWeight: 900, borderRadius: 999, padding: "1px 7px" }}>
+              {incoming.length} new
+            </span>
+          )}
+        </span>
+        <span style={{ fontSize: 11, color: C.mutedDim, fontFamily: MONO }}>{open ? "Hide" : "Show"}</span>
+      </button>
+
+      {open && (
+        <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 14 }}>
+          <form onSubmit={submitAdd} style={{ display: "flex", gap: 8 }}>
+            <Field value={addUsername} onChange={(e) => setAddUsername(e.target.value)} placeholder="Add friend by HunT ID..." />
+            <Btn type="submit" disabled={busy} style={{ paddingLeft: 16, paddingRight: 16 }}><UserPlus size={14} /></Btn>
+          </form>
+          {error && <ErrorNote>{error}</ErrorNote>}
+
+          {incoming.length > 0 && (
+            <div>
+              <p style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.mutedDim, marginBottom: 8 }}>Requests</p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {incoming.map((f) => (
+                  <div key={f.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: C.panel2, borderRadius: 10, padding: "8px 12px" }}>
+                    <span style={{ fontSize: 12.5, fontFamily: MONO, fontWeight: 700 }}>@{f.username}</span>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button onClick={() => respond(f.id, true)} style={{ background: C.accent, color: "#0a0a0a", border: "none", borderRadius: 999, padding: "4px 10px", fontSize: 10.5, fontWeight: 800, cursor: "pointer" }}>Accept</button>
+                      <button onClick={() => respond(f.id, false)} style={{ background: "none", color: C.mutedDim, border: `1px solid ${C.border}`, borderRadius: 999, padding: "4px 10px", fontSize: 10.5, fontWeight: 800, cursor: "pointer" }}>Decline</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {outgoing.length > 0 && (
+            <div>
+              <p style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.mutedDim, marginBottom: 8 }}>Pending</p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {outgoing.map((f) => (
+                  <span key={f.id} style={{ fontSize: 11, fontFamily: MONO, color: C.mutedDim, background: C.panel2, borderRadius: 999, padding: "4px 10px" }}>@{f.username} · sent</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <p style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.mutedDim, marginBottom: 8 }}>Friends</p>
+            {friends.length === 0 ? (
+              <p style={{ color: C.mutedDim, fontSize: 12.5 }}>No friends yet — add one above.</p>
+            ) : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {friends.map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => unfriend(f.id)}
+                    title="Remove friend"
+                    style={{ fontSize: 11, fontFamily: MONO, color: C.text, background: C.panel2, border: "none", borderRadius: 999, padding: "4px 10px", display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}
+                  >
+                    <UserCheck size={11} color={C.accent} /> @{f.username}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FeedScreen({ user }) {
+  const [posts, setPosts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [avatars, setAvatars] = useState({});
+  const [likeSummary, setLikeSummary] = useState({});
+  const [commentCounts, setCommentCounts] = useState({});
+  const [commentsTarget, setCommentsTarget] = useState(null);
+  const [friendState, setFriendState] = useState({ friends: [], incoming: [], outgoing: [] });
+
+  const [composerText, setComposerText] = useState("");
+  const [composerPhotos, setComposerPhotos] = useState([]);
+  const [composerVisibility, setComposerVisibility] = useState("public");
+  const [posting, setPosting] = useState(false);
+  const [error, setError] = useState("");
+
+  const loadFriends = useCallback(() => {
+    getFriendState().then(setFriendState).catch(() => {});
+  }, []);
+
+  const loadFeed = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await getFeed();
+      setPosts(list);
+      const ids = list.map((p) => p.id);
+      const [av, likes, counts] = await Promise.all([
+        getAvatarsForUsernames(list.map((p) => p.authorUsername)),
+        getLikeSummary("post", ids),
+        getCommentCounts("post", ids),
+      ]);
+      setAvatars(av);
+      setLikeSummary(likes);
+      setCommentCounts(counts);
+    } catch (err) {
+      console.error("Failed to load feed:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadFeed(); loadFriends(); }, [loadFeed, loadFriends]);
+
+  const submitPost = async (e) => {
+    e.preventDefault();
+    setError("");
+    if (!composerText.trim() && composerPhotos.length === 0) {
+      setError("Write something or add a photo first.");
+      return;
+    }
+    setPosting(true);
+    try {
+      const filesToUpload = composerPhotos.filter((p) => p.file).map((p) => p.file);
+      const uploadedUrls = filesToUpload.length ? await uploadListingPhotos(filesToUpload) : [];
+      let uIdx = 0;
+      const photoUrls = composerPhotos.map((p) => (p.file ? uploadedUrls[uIdx++] : p.url));
+
+      await createPost({ text: composerText, photos: photoUrls, visibility: composerVisibility });
+      setComposerText(""); setComposerPhotos([]); setComposerVisibility("public");
+      await loadFeed();
+    } catch (err) {
+      setError(err?.message || "Couldn't post that. Try again.");
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  const removePost = async (id) => {
+    if (!window.confirm("Delete this post? This can't be undone.")) return;
+    try {
+      await deletePost(id);
+      setPosts((p) => p.filter((post) => post.id !== id));
+    } catch (err) {
+      window.alert(err?.message || "Couldn't delete that post.");
+    }
+  };
+
+  const visibilityOptions = [
+    { id: "public", label: "Public", icon: Globe },
+    { id: "friends", label: "Friends", icon: Users },
+    { id: "private", label: "Only me", icon: EyeOff },
+  ];
+
+  return (
+    <div style={{ maxWidth: 520, margin: "0 auto", padding: "24px 16px" }}>
+      <Eyebrow dot>Share something with HunT</Eyebrow>
+      <h1 style={{ fontSize: 24, fontWeight: 900, marginTop: 6, marginBottom: 4 }}>Feed</h1>
+      <p style={{ color: C.muted, fontSize: 13, marginBottom: 18 }}>Post thoughts or photos — you pick who sees them.</p>
+
+      <FriendsPanel friendState={friendState} onChanged={loadFriends} />
+
+      <form onSubmit={submitPost} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 22, display: "flex", flexDirection: "column", gap: 12 }}>
+        <Field as="textarea" rows={3} value={composerText} onChange={(e) => setComposerText(e.target.value)} placeholder="What's on your mind?" style={{ resize: "none" }} />
+        <PhotoPicker photos={composerPhotos} setPhotos={setComposerPhotos} disabled={posting} />
+        <div style={{ display: "flex", background: C.panel2, borderRadius: 10, padding: 4, border: `1px solid ${C.border}` }}>
+          {visibilityOptions.map((v) => (
+            <button
+              key={v.id}
+              type="button"
+              onClick={() => setComposerVisibility(v.id)}
+              style={{
+                flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "8px 0",
+                borderRadius: 8, fontSize: 10.5, fontWeight: 800, textTransform: "uppercase", border: "none", cursor: "pointer",
+                background: composerVisibility === v.id ? C.accent : "transparent",
+                color: composerVisibility === v.id ? "#0a0a0a" : C.muted,
+              }}
+            >
+              <v.icon size={12} /> {v.label}
+            </button>
+          ))}
+        </div>
+        {error && <ErrorNote>{error}</ErrorNote>}
+        <Btn type="submit" disabled={posting}>{posting ? "Posting..." : "Post"}</Btn>
+      </form>
+
+      {loading ? (
+        <p style={{ color: C.mutedDim, fontSize: 13, fontFamily: MONO }}>Loading feed...</p>
+      ) : posts.length === 0 ? (
+        <div style={{ border: `1px dashed ${C.border}`, borderRadius: 14, padding: "50px 20px", textAlign: "center" }}>
+          <p style={{ color: C.muted, fontSize: 13 }}>Nothing here yet. Be the first to post.</p>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {posts.map((p) => {
+            const VisIcon = visibilityIcon(p.visibility);
+            return (
+              <div key={p.id} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                  <Avatar name={p.authorUsername} url={avatars[p.authorUsername]} size={36} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ fontWeight: 800, fontSize: 13, fontFamily: MONO }}>@{p.authorUsername}</p>
+                    <p style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: C.mutedDim }}>
+                      <Clock size={10} /> {timeAgo(p.createdAt)} <span>·</span> <VisIcon size={10} /> {visibilityLabel(p.visibility)}
+                    </p>
+                  </div>
+                  {p.authorUsername === user.username && (
+                    <button onClick={() => removePost(p.id)} title="Delete post" style={{ background: "none", border: "none", color: C.mutedDim, cursor: "pointer", padding: 2 }}>
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
+
+                {p.text && <p style={{ fontSize: 13.5, color: C.text, lineHeight: 1.55, marginBottom: p.photos.length ? 10 : 0 }}>{p.text}</p>}
+
+                {p.photos.length > 0 && (
+                  <div style={{ display: "grid", gridTemplateColumns: p.photos.length === 1 ? "1fr" : "1fr 1fr", gap: 6, marginBottom: 4, borderRadius: 10, overflow: "hidden" }}>
+                    {p.photos.map((url, i) => (
+                      <img key={i} src={url} alt="" style={{ width: "100%", height: p.photos.length === 1 ? 280 : 140, objectFit: "cover" }} />
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ display: "flex", alignItems: "center", gap: 18, marginTop: 12 }}>
+                  <LikeButton
+                    targetType="post"
+                    targetId={p.id}
+                    initialCount={likeSummary[p.id]?.count || 0}
+                    initialLiked={likeSummary[p.id]?.likedByMe || false}
+                    size={14}
+                  />
+                  <button
+                    onClick={() => setCommentsTarget(p)}
+                    style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", cursor: "pointer", padding: 0, color: C.mutedDim }}
+                  >
+                    <MessageSquare size={14} />
+                    <span style={{ fontSize: 12.5, fontFamily: MONO }}>{commentCounts[p.id] || 0}</span>
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {commentsTarget && (
+        <CommentsModal
+          targetType="post"
+          targetId={commentsTarget.id}
+          title={`@${commentsTarget.authorUsername}'s post`}
+          currentUser={user}
+          onClose={() => setCommentsTarget(null)}
+          onCountChange={(n) => setCommentCounts((c) => ({ ...c, [commentsTarget.id]: n }))}
+        />
+      )}
+    </div>
+  );
+}
+
+
 function formatCard(v) { return v.replace(/[^0-9]/g, "").slice(0, 16).replace(/(.{4})/g, "$1 ").trim(); }
 function formatExpiry(v) { const d = v.replace(/[^0-9]/g, "").slice(0, 4); return d.length > 2 ? `${d.slice(0, 2)}/${d.slice(2)}` : d; }
 
@@ -2058,6 +2599,28 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileU
   const [editingListing, setEditingListing] = useState(null);
   const [reviewedIds, setReviewedIds] = useState([]);
   const [reviewTarget, setReviewTarget] = useState(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState("");
+  const avatarInputRef = useRef(null);
+
+  const pickAvatar = () => avatarInputRef.current?.click();
+
+  const onAvatarSelected = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setAvatarError("");
+    setAvatarBusy(true);
+    try {
+      const url = await uploadAvatar(file);
+      const patch = await updateProfile({ avatarUrl: url });
+      onProfileUpdated(patch);
+    } catch (err) {
+      setAvatarError(err?.message || "Couldn't update your profile picture.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -2114,15 +2677,30 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileU
 
   return (
     <div style={{ maxWidth: 460, margin: "0 auto", padding: "24px 16px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20 }}>
-        <div style={{ width: 60, height: 60, borderRadius: 999, background: C.accent, color: "#0a0a0a", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 22 }}>
-          {user.name[0]?.toUpperCase()}
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 8 }}>
+        <div style={{ position: "relative" }}>
+          <Avatar name={user.name} url={user.avatarUrl} size={60} onClick={pickAvatar} />
+          <button
+            onClick={pickAvatar}
+            disabled={avatarBusy}
+            title="Change profile picture"
+            style={{
+              position: "absolute", bottom: -2, right: -2, width: 22, height: 22, borderRadius: 999,
+              background: C.accent, border: `2px solid ${C.bg}`, display: "flex", alignItems: "center",
+              justifyContent: "center", cursor: "pointer", opacity: avatarBusy ? 0.6 : 1,
+            }}
+          >
+            <Camera size={11} color="#0a0a0a" />
+          </button>
+          <input ref={avatarInputRef} type="file" accept="image/*" hidden onChange={onAvatarSelected} />
         </div>
         <div>
           <h1 style={{ fontSize: 19, fontWeight: 900 }}>{user.name}</h1>
           <p style={{ color: C.muted, fontSize: 13, fontFamily: MONO }}>@{user.username}</p>
         </div>
       </div>
+      {avatarError && <div style={{ marginBottom: 12 }}><ErrorNote>{avatarError}</ErrorNote></div>}
+      <div style={{ marginBottom: 12 }} />
 
       <PersonalInfoCard user={user} onProfileUpdated={onProfileUpdated} />
 
@@ -2394,6 +2972,7 @@ export default function HunT() {
         />
       )}
       {screen === "post" && <PostScreen user={user} onPosted={(arr) => setListings(arr)} isMinor={isMinor} isRestricted={isRestricted} ageUnverified={ageUnverified} />}
+      {screen === "feed" && <FeedScreen user={user} />}
       {screen === "chat" && (
         <ChatScreen
           user={user}

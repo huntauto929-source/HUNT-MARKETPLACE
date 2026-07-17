@@ -86,7 +86,7 @@ export async function fileReport({ targetUsername, listingId, reason }) {
   if (error) throw error;
 }
 
-export async function updateProfile({ name, dob, contactMethod, contactValue, dobPublic, contactPublic }) {
+export async function updateProfile({ name, dob, contactMethod, contactValue, dobPublic, contactPublic, avatarUrl }) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) throw new Error("You need to be logged in to update your profile.");
 
@@ -97,6 +97,7 @@ export async function updateProfile({ name, dob, contactMethod, contactValue, do
   if (contactValue !== undefined) patch.contact_value = contactValue;
   if (dobPublic !== undefined) patch.dob_public = dobPublic;
   if (contactPublic !== undefined) patch.contact_public = contactPublic;
+  if (avatarUrl !== undefined) patch.avatar_url = avatarUrl;
 
   const { data: profile, error } = await supabase
     .from("profiles")
@@ -113,6 +114,7 @@ export async function updateProfile({ name, dob, contactMethod, contactValue, do
     contactValue: profile.contact_value || null,
     dobPublic: !!profile.dob_public,
     contactPublic: !!profile.contact_public,
+    avatarUrl: profile.avatar_url || null,
   };
 }
 
@@ -167,7 +169,7 @@ export async function getPublicProfile(username) {
   const uname = username.trim().toLowerCase();
   const { data: profile, error } = await supabase
     .from("public_profiles")
-    .select("username, name, created_at, age, contact_method, contact_value, review_count, avg_rating")
+    .select("username, name, created_at, age, contact_method, contact_value, review_count, avg_rating, avatar_url")
     .eq("username", uname)
     .maybeSingle();
   if (error) throw error;
@@ -182,6 +184,7 @@ export async function getPublicProfile(username) {
     contactValue: profile.contact_value || null,
     reviewCount: profile.review_count || 0,
     avgRating: profile.avg_rating ?? null,
+    avatarUrl: profile.avatar_url || null,
   };
 }
 
@@ -206,6 +209,7 @@ async function fetchProfileForSession(session) {
     name: profile?.name || meta.name || "",
     dob: profile?.dob || meta.dob || "",
     dobPublic: !!profile?.dob_public,
+    avatarUrl: profile?.avatar_url || null,
     contactMethod: profile?.contact_method || null,
     contactValue: profile?.contact_value || null,
     contactPublic: !!profile?.contact_public,
