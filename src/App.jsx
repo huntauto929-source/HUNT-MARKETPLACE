@@ -126,6 +126,12 @@ function GlobalFX() {
       }
       .hunt-fadeup { animation: hunt-fade-up .35s ease both; }
       .hunt-scroll::-webkit-scrollbar { display: none; }
+      /* Tailwind bracket classes like w-[76px] don't render in this
+         environment (no JIT compiler) — this real CSS rule replaces
+         them so the sidebar actually gets a width instead of
+         collapsing/overlapping the main content next to it. */
+      .hunt-sidebar { width: 76px; }
+      @media (min-width: 1024px) { .hunt-sidebar { width: 240px; } }
     `}</style>
   );
 }
@@ -681,7 +687,7 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRest
     <div style={{ minHeight: "100vh", background: C.bg, color: C.text, display: "flex" }} className="md:flex-row flex-col">
       <GlobalFX />
       <aside
-        className="hidden md:flex md:w-[76px] lg:w-60"
+        className="hidden md:flex hunt-sidebar"
         style={{ flexDirection: "column", borderRight: `1px solid ${C.borderSoft}`, padding: 20, flexShrink: 0 }}
       >
         <div className="lg:block hidden"><Logo /></div>
