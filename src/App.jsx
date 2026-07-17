@@ -4,7 +4,7 @@ import {
   Wrench, ShieldCheck, Send, Car, Fuel, Clock, AlertTriangle,
   CreditCard, CheckCircle, Lock, Package, Shield, Radio, Flag,
   MapPin, Trash2, Navigation, Star, Pencil, Image as ImageIcon, Bell,
-  Heart, MessageSquare, Users, Globe, EyeOff, UserPlus, UserCheck, Camera, Eye, Mail, Video, Film,
+  Heart, MessageSquare, Users, Globe, EyeOff, UserPlus, UserCheck, Camera, Eye, Mail, Video, Film, Share2, Link2,
 } from "lucide-react";
 import { signUp, signIn, signOut, sendPasswordReset, updatePassword, updateProfile, getSessionUser, onAuthChange, fileReport, getPublicProfile, submitReview, getReviews, getMyReviewedListingIds } from "./authClient.js";
 import { uploadListingPhotos, deleteListingPhotos, validatePhotoFiles, MAX_PHOTOS, uploadAvatar, validateVideoFile, uploadFeedVideo, deleteFeedVideo } from "./photos.js";
@@ -614,6 +614,45 @@ function LikeButton({ targetType, targetId, initialCount = 0, initialLiked = fal
   );
 }
 
+/* ---------------------------------------------------------- SHARE BUTTON */
+function buildShareUrl(type, id) {
+  return `${window.location.origin}/?${type}=${encodeURIComponent(id)}`;
+}
+
+function ShareButton({ url, title, text, size = 13 }) {
+  const [copied, setCopied] = useState(false);
+
+  const doShare = async (e) => {
+    e.stopPropagation();
+    if (navigator.share) {
+      try {
+        await navigator.share({ title, text, url });
+      } catch (_) {
+        // person cancelled the native share sheet — not an error
+      }
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (_) {
+      window.prompt("Copy this link:", url);
+    }
+  };
+
+  return (
+    <button
+      onClick={doShare}
+      title="Share"
+      style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", cursor: "pointer", padding: 0, color: copied ? C.accent : C.mutedDim }}
+    >
+      {copied ? <Link2 size={size} /> : <Share2 size={size} />}
+      {copied && <span style={{ fontSize: size - 2, fontFamily: MONO }}>Copied</span>}
+    </button>
+  );
+}
+
 /* ---------------------------------------------------------- COMMENTS MODAL (shared: listings + feed posts) */
 function CommentsModal({ targetType, targetId, title, currentUser, onClose, onCountChange }) {
   const [comments, setComments] = useState([]);
@@ -1124,13 +1163,14 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRest
 }
 
 /* ---------------------------------------------------------- HOME / MARKET */
-function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMinor, isRestricted, ageUnverified, onViewProfile }) {
+function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMinor, isRestricted, ageUnverified, onViewProfile, deepLinkListingId }) {
   const [query, setQuery] = useState("");
   const [cat, setCat] = useState("all");
   const [reportTarget, setReportTarget] = useState(null);
   const [likeSummary, setLikeSummary] = useState({});
   const [commentCounts, setCommentCounts] = useState({});
   const [commentsTarget, setCommentsTarget] = useState(null);
+  const [highlightId, setHighlightId] = useState(deepLinkListingId || null);
 
   useEffect(() => {
     const ids = listings.map((l) => l.id);
@@ -1138,6 +1178,16 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
     getLikeSummary("listing", ids).then(setLikeSummary).catch(() => {});
     getCommentCounts("listing", ids).then(setCommentCounts).catch(() => {});
   }, [listings]);
+
+  // A shared listing link lands here — scroll straight to it and
+  // give it a brief highlight so it's obvious which one was shared.
+  useEffect(() => {
+    if (!deepLinkListingId || !listings.length) return;
+    const el = document.getElementById(`listing-${deepLinkListingId}`);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    const t = setTimeout(() => setHighlightId(null), 3000);
+    return () => clearTimeout(t);
+  }, [deepLinkListingId, listings]);
 
   const filtered = listings.filter((l) => {
     const matchesCat = cat === "all" || l.category === cat;
@@ -1253,8 +1303,14 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
                 return (
                   <div
                     key={l.id}
+                    id={`listing-${l.id}`}
                     className="md:flex-row flex-col"
-                    style={{ display: "flex", gap: 14, background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14 }}
+                    style={{
+                      display: "flex", gap: 14, background: C.panel, borderRadius: 12, padding: 14,
+                      border: `1px solid ${highlightId === l.id ? C.accent : C.border}`,
+                      boxShadow: highlightId === l.id ? `0 0 0 3px ${C.accentDim}` : "none",
+                      transition: "box-shadow .3s, border-color .3s",
+                    }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
                       <span style={{ fontFamily: MONO, fontSize: 11, color: C.mutedDim, width: 26 }}>{String(idx + 1).padStart(2, "0")}</span>
@@ -1325,6 +1381,11 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
                           <MessageSquare size={13} />
                           <span style={{ fontSize: 12, fontFamily: MONO }}>{commentCounts[l.id] || 0}</span>
                         </button>
+                        <ShareButton
+                          url={buildShareUrl("listing", l.id)}
+                          title={l.title}
+                          text={`Check out "${l.title}" on HunT`}
+                        />
                       </div>
                     </div>
 
@@ -1551,7 +1612,15 @@ function PublicProfileModal({ username, allListings, currentUser, onClose, onMes
                 </div>
               )}
               {friendError && <div style={{ marginBottom: 12 }}><ErrorNote>{friendError}</ErrorNote></div>}
-              <div style={{ marginBottom: 12 }} />
+
+              <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+                <ShareButton
+                  url={buildShareUrl("profile", profile.username)}
+                  title={`@${profile.username} on HunT`}
+                  text={`Check out @${profile.username} on HunT`}
+                  size={13}
+                />
+              </div>
 
               <h4 style={{ fontSize: 11, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.muted, marginBottom: 10 }}>
                 Active listings ({theirListings.length})
@@ -2289,7 +2358,7 @@ function FriendsPanel({ friendState, onChanged }) {
   );
 }
 
-function FeedScreen({ user }) {
+function FeedScreen({ user, deepLinkPostId }) {
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [avatars, setAvatars] = useState({});
@@ -2298,6 +2367,7 @@ function FeedScreen({ user }) {
   const [commentsTarget, setCommentsTarget] = useState(null);
   const [friendState, setFriendState] = useState({ friends: [], incoming: [], outgoing: [] });
   const [filter, setFilter] = useState("all"); // all | videos
+  const [highlightId, setHighlightId] = useState(deepLinkPostId || null);
 
   const [composerText, setComposerText] = useState("");
   const [composerPhotos, setComposerPhotos] = useState([]);
@@ -2332,6 +2402,17 @@ function FeedScreen({ user }) {
   }, []);
 
   useEffect(() => { loadFeed(); loadFriends(); }, [loadFeed, loadFriends]);
+
+  // A shared post link lands here — make sure it's visible under
+  // whatever filter is active, scroll to it, and briefly highlight it.
+  useEffect(() => {
+    if (!deepLinkPostId || !posts.length) return;
+    setFilter("all");
+    const el = document.getElementById(`post-${deepLinkPostId}`);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    const t = setTimeout(() => setHighlightId(null), 3000);
+    return () => clearTimeout(t);
+  }, [deepLinkPostId, posts]);
 
   const setPhotosExclusive = (updater) => {
     setComposerVideo(null);
@@ -2456,7 +2537,16 @@ function FeedScreen({ user }) {
           {visiblePosts.map((p) => {
             const VisIcon = visibilityIcon(p.visibility);
             return (
-              <div key={p.id} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16 }}>
+              <div
+                key={p.id}
+                id={`post-${p.id}`}
+                style={{
+                  background: C.panel, borderRadius: 14, padding: 16,
+                  border: `1px solid ${highlightId === p.id ? C.accent : C.border}`,
+                  boxShadow: highlightId === p.id ? `0 0 0 3px ${C.accentDim}` : "none",
+                  transition: "box-shadow .3s, border-color .3s",
+                }}
+              >
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                   <Avatar name={p.authorUsername} url={avatars[p.authorUsername]} size={36} />
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -2499,6 +2589,12 @@ function FeedScreen({ user }) {
                     <MessageSquare size={14} />
                     <span style={{ fontSize: 12.5, fontFamily: MONO }}>{commentCounts[p.id] || 0}</span>
                   </button>
+                  <ShareButton
+                    url={buildShareUrl("post", p.id)}
+                    title={`@${p.authorUsername} on HunT`}
+                    text={p.text ? (p.text.length > 100 ? `${p.text.slice(0, 97)}...` : p.text) : `@${p.authorUsername}'s post on HunT`}
+                    size={14}
+                  />
                 </div>
               </div>
             );
@@ -3337,8 +3433,27 @@ export default function HunT() {
   const [openChatWith, setOpenChatWith] = useState(null);
   const [checkoutListing, setCheckoutListing] = useState(null);
   const [viewProfileUsername, setViewProfileUsername] = useState(null);
+  const [deepLinkListingId, setDeepLinkListingId] = useState(null);
+  const [deepLinkPostId, setDeepLinkPostId] = useState(null);
   const { unreadByUser, totalUnread, markRead, activeChatRef } = useMessageNotifications(user);
   const { activityFeed, unseenCount, markActivitySeen, profileActiveRef } = useActivityNotifications(user, listings);
+
+  // Shared links (from the Share button) land here as ?listing=,
+  // ?post=, or ?profile= — open the right screen/item once, then
+  // strip the query string so refreshing or navigating away doesn't
+  // keep re-triggering it.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const listingId = params.get("listing");
+    const postId = params.get("post");
+    const profileUsername = params.get("profile");
+    if (listingId) { setScreen("home"); setDeepLinkListingId(listingId); }
+    if (postId) { setScreen("feed"); setDeepLinkPostId(postId); }
+    if (profileUsername) setViewProfileUsername(profileUsername);
+    if (listingId || postId || profileUsername) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
 
   // Lazy initializer runs during this very render, before the JSX
   // below evaluates any C.xxx — so the saved theme is already live
@@ -3471,10 +3586,11 @@ export default function HunT() {
           isRestricted={isRestricted}
           ageUnverified={ageUnverified}
           onViewProfile={setViewProfileUsername}
+          deepLinkListingId={deepLinkListingId}
         />
       )}
       {screen === "post" && <PostScreen user={user} onPosted={(arr) => setListings(arr)} isMinor={isMinor} isRestricted={isRestricted} ageUnverified={ageUnverified} />}
-      {screen === "feed" && <FeedScreen user={user} />}
+      {screen === "feed" && <FeedScreen user={user} deepLinkPostId={deepLinkPostId} />}
       {screen === "chat" && (
         <ChatScreen
           user={user}
