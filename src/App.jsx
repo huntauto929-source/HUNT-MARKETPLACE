@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Search, Plus, MessageCircle, User, LogOut, X, ChevronLeft,
   Wrench, ShieldCheck, Send, Car, Fuel, Clock, AlertTriangle,
-  CreditCard, CheckCircle, Lock, Package, Shield, Radio, Flag,
+  CheckCircle, Lock, Shield, Radio, Flag,
   MapPin, Trash2, Navigation, Star, Pencil, Image as ImageIcon, Bell,
   Heart, MessageSquare, Users, Globe, EyeOff, UserPlus, UserCheck, Camera, Eye, Mail, Video, Film, Share2, Link2,
 } from "lucide-react";
@@ -1163,7 +1163,7 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRest
 }
 
 /* ---------------------------------------------------------- HOME / MARKET */
-function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMinor, isRestricted, ageUnverified, onViewProfile, deepLinkListingId }) {
+function HomeScreen({ listings, loading, onOpenChat, currentUser, isMinor, isRestricted, ageUnverified, onViewProfile, deepLinkListingId }) {
   const [query, setQuery] = useState("");
   const [cat, setCat] = useState("all");
   const [reportTarget, setReportTarget] = useState(null);
@@ -1241,8 +1241,8 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
           <ShieldCheck size={16} color={C.warn} style={{ flexShrink: 0, marginTop: 1 }} />
           <p style={{ fontSize: 12, color: C.warn, lineHeight: 1.5 }}>
             {ageUnverified
-              ? "You're browsing in limited mode. Add your birthday in Profile settings to unlock buying and selling."
-              : "You're browsing in limited mode. Members under 18 can browse listings and message sellers, but buying and selling unlock at 18."}
+              ? "You're browsing in limited mode. Add your birthday in Profile settings to unlock selling."
+              : "You're browsing in limited mode. Members under 18 can browse listings and message sellers, but selling unlocks at 18."}
           </p>
         </div>
       )}
@@ -1252,7 +1252,7 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
           <Flag size={16} color={C.warn} style={{ flexShrink: 0, marginTop: 1 }} />
           <p style={{ fontSize: 12, color: C.warn, lineHeight: 1.5 }}>
             Your account is restricted after multiple member complaints. You can still browse and
-            message, but buying and selling are paused pending review.
+            message, but selling is paused pending review.
           </p>
         </div>
       )}
@@ -1393,25 +1393,9 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
                       <span style={{ color: C.gold, fontWeight: 900, fontSize: 15 }}>{l.price ? `$${l.price}` : "Contact"}</span>
                       {l.seller !== currentUser.username && l.status !== "sold" && (
                         <div style={{ display: "flex", gap: 6, width: "100%" }}>
-                          {l.type === "item" && l.price ? (
-                            <>
-                              <Btn
-                                style={{ flex: 1, padding: "8px 6px", fontSize: 10.5 }}
-                                onClick={() => onBuyNow(l)}
-                                disabled={isMinor || isRestricted}
-                                title={isMinor ? (ageUnverified ? "Add your birthday in Profile settings to unlock buying" : "Buying unlocks at 18") : isRestricted ? "Buying is paused while your account is under review" : undefined}
-                              >
-                                {isMinor || isRestricted ? <Lock size={12} /> : <CreditCard size={12} />} Buy
-                              </Btn>
-                              <Btn variant="ghost" style={{ padding: "8px 10px" }} onClick={() => onOpenChat(l.seller)} title="Message seller">
-                                <MessageCircle size={13} />
-                              </Btn>
-                            </>
-                          ) : (
-                            <Btn style={{ flex: 1, padding: "8px 6px", fontSize: 10.5 }} onClick={() => onOpenChat(l.seller)}>
-                              <MessageCircle size={12} /> Message
-                            </Btn>
-                          )}
+                          <Btn style={{ flex: 1, padding: "8px 6px", fontSize: 10.5 }} onClick={() => onOpenChat(l.seller)}>
+                            <MessageCircle size={12} /> Message
+                          </Btn>
                         </div>
                       )}
                     </div>
@@ -2616,127 +2600,6 @@ function FeedScreen({ user, deepLinkPostId }) {
   );
 }
 
-
-function formatCard(v) { return v.replace(/[^0-9]/g, "").slice(0, 16).replace(/(.{4})/g, "$1 ").trim(); }
-function formatExpiry(v) { const d = v.replace(/[^0-9]/g, "").slice(0, 4); return d.length > 2 ? `${d.slice(0, 2)}/${d.slice(2)}` : d; }
-
-function CheckoutModal({ listing, buyer, onClose, onComplete }) {
-  const [stage, setStage] = useState("shipping");
-  const [shipping, setShipping] = useState({ fullName: buyer.name || "", address: "", city: "", zip: "" });
-  const [card, setCard] = useState({ number: "", expiry: "", cvc: "" });
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  const toShipping = shipping.fullName.trim() && shipping.address.trim() && shipping.city.trim() && shipping.zip.trim();
-
-  const submitPayment = async (e) => {
-    e.preventDefault();
-    setError("");
-    const digits = card.number.replace(/\s/g, "");
-    if (digits.length < 15) { setError("Enter a valid card number."); return; }
-    if (!/^\d{2}\/\d{2}$/.test(card.expiry)) { setError("Enter expiry as MM/YY."); return; }
-    if (card.cvc.length < 3) { setError("Enter a valid CVC."); return; }
-    setBusy(true);
-    try {
-      await new Promise((r) => setTimeout(r, 1200));
-      const orderRes = await window.storage.get("hunt:orders", true).catch(() => null);
-      const orders = orderRes ? JSON.parse(orderRes.value) : [];
-      const order = {
-        id: `ord_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        listingId: listing.id, title: listing.title, price: listing.price,
-        buyer: buyer.username, seller: listing.seller, shipping,
-        cardLast4: digits.slice(-4), createdAt: Date.now(),
-      };
-      orders.push(order);
-      await window.storage.set("hunt:orders", JSON.stringify(orders), true);
-
-      const listingsRes = await window.storage.get("hunt:listings", true).catch(() => null);
-      const allListings = listingsRes ? JSON.parse(listingsRes.value) : [];
-      const updated = allListings.map((l) => (l.id === listing.id ? { ...l, status: "sold" } : l));
-      await window.storage.set("hunt:listings", JSON.stringify(updated), true);
-
-      const key = chatKey(buyer.username, listing.seller);
-      const chatRes = await window.storage.get(key, true).catch(() => null);
-      const msgs = chatRes ? JSON.parse(chatRes.value) : [];
-      msgs.push({ from: buyer.username, text: `Bought "${listing.title}" for $${listing.price} — shipping to ${shipping.address}, ${shipping.city}.`, ts: Date.now() });
-      await window.storage.set(key, JSON.stringify(msgs), true);
-
-      setStage("done");
-      onComplete(updated);
-    } catch (err) {
-      setError("Payment couldn't be processed. Try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.72)", zIndex: 30, display: "flex", alignItems: "flex-end", justifyContent: "center" }} className="md:items-center">
-      <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 18, width: "100%", maxWidth: 420, maxHeight: "90vh", overflowY: "auto" }} className="hunt-scroll">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: `1px solid ${C.borderSoft}`, position: "sticky", top: 0, background: C.bg }}>
-          <h2 style={{ fontWeight: 900, fontSize: 17 }}>{stage === "done" ? "Order confirmed" : "Checkout"}</h2>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}><X size={20} /></button>
-        </div>
-
-        <div style={{ padding: "16px 20px" }}>
-          {stage !== "done" && (
-            <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 16px", marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div>
-                <p style={{ fontWeight: 800, fontSize: 13 }}>{listing.title}</p>
-                <p style={{ color: C.mutedDim, fontSize: 11, fontFamily: MONO }}>Sold by @{listing.seller}</p>
-              </div>
-              <span style={{ color: C.gold, fontWeight: 900 }}>${listing.price}</span>
-            </div>
-          )}
-
-          {stage === "shipping" && (
-            <form onSubmit={(e) => { e.preventDefault(); if (toShipping) setStage("payment"); else setError("Fill in every shipping field."); }} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <Eyebrow>
-                <Package size={12} style={{ marginRight: 2 }} /> Shipping details
-              </Eyebrow>
-              <Field value={shipping.fullName} onChange={(e) => setShipping((s) => ({ ...s, fullName: e.target.value }))} placeholder="Full name" />
-              <Field value={shipping.address} onChange={(e) => setShipping((s) => ({ ...s, address: e.target.value }))} placeholder="Street address" />
-              <div style={{ display: "flex", gap: 10 }}>
-                <Field value={shipping.city} onChange={(e) => setShipping((s) => ({ ...s, city: e.target.value }))} placeholder="City" />
-                <Field value={shipping.zip} onChange={(e) => setShipping((s) => ({ ...s, zip: e.target.value }))} placeholder="ZIP" style={{ maxWidth: 100 }} />
-              </div>
-              {error && <ErrorNote>{error}</ErrorNote>}
-              <Btn type="submit">Continue to payment</Btn>
-            </form>
-          )}
-
-          {stage === "payment" && (
-            <form onSubmit={submitPayment} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <Eyebrow>
-                <Lock size={12} style={{ marginRight: 2 }} /> Payment (demo only, nothing is charged)
-              </Eyebrow>
-              <Field value={card.number} onChange={(e) => setCard((c) => ({ ...c, number: formatCard(e.target.value) }))} placeholder="Card number" inputMode="numeric" style={{ fontFamily: MONO }} />
-              <div style={{ display: "flex", gap: 10 }}>
-                <Field value={card.expiry} onChange={(e) => setCard((c) => ({ ...c, expiry: formatExpiry(e.target.value) }))} placeholder="MM/YY" inputMode="numeric" style={{ fontFamily: MONO }} />
-                <Field value={card.cvc} onChange={(e) => setCard((c) => ({ ...c, cvc: e.target.value.replace(/[^0-9]/g, "").slice(0, 4) }))} placeholder="CVC" inputMode="numeric" style={{ maxWidth: 90, fontFamily: MONO }} />
-              </div>
-              {error && <ErrorNote>{error}</ErrorNote>}
-              <Btn type="submit" disabled={busy}>{busy ? "Processing..." : `Pay $${listing.price}`}</Btn>
-              <Btn type="button" variant="subtle" onClick={() => setStage("shipping")}>Back</Btn>
-            </form>
-          )}
-
-          {stage === "done" && (
-            <div style={{ textAlign: "center", padding: "24px 0" }}>
-              <CheckCircle size={44} color={C.accent} style={{ margin: "0 auto 12px" }} />
-              <p style={{ fontWeight: 800, marginBottom: 4 }}>You bought {listing.title}</p>
-              <p style={{ color: C.muted, fontSize: 13, marginBottom: 24, lineHeight: 1.5 }}>
-                @{listing.seller} has been notified in your chat. Shipping to {shipping.address}, {shipping.city}.
-              </p>
-              <Btn onClick={onClose}>Done</Btn>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ---------------------------------------------------------- PRIVATE PERSONAL INFO (editable, privacy toggles) */
 function PersonalInfoCard({ user, onProfileUpdated }) {
   const [editing, setEditing] = useState(false);
@@ -3145,6 +3008,23 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileU
     }
   };
 
+  const [togglingSoldId, setTogglingSoldId] = useState(null);
+  const toggleSold = async (listingId, nextStatus) => {
+    setTogglingSoldId(listingId);
+    try {
+      const res = await window.storage.get("hunt:listings", true).catch(() => null);
+      const arr = res ? JSON.parse(res.value) : [];
+      const updated = arr.map((l) => (l.id === listingId ? { ...l, status: nextStatus } : l));
+      await window.storage.set("hunt:listings", JSON.stringify(updated), true);
+      onListingsChanged(updated);
+    } catch (err) {
+      console.error("Failed to update listing status:", err);
+      window.alert("Couldn't update that listing. Try again.");
+    } finally {
+      setTogglingSoldId(null);
+    }
+  };
+
   const Section = ({ title, count, children, empty }) => (
     <div style={{ marginBottom: 24 }}>
       <h2 style={{ fontSize: 11, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.muted, marginBottom: 10 }}>
@@ -3210,9 +3090,24 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileU
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
               {l.status === "sold" ? (
-                <span style={{ fontSize: 10, textTransform: "uppercase", fontWeight: 800, color: "#0a0a0a", background: C.accent, padding: "2px 6px", borderRadius: 4 }}>Sold</span>
+                <button
+                  onClick={() => toggleSold(l.id, "active")}
+                  disabled={togglingSoldId === l.id}
+                  title="Mark as active again"
+                  style={{ fontSize: 10, textTransform: "uppercase", fontWeight: 800, color: "#0a0a0a", background: C.accent, padding: "3px 8px", borderRadius: 4, border: "none", cursor: "pointer", opacity: togglingSoldId === l.id ? 0.5 : 1 }}
+                >
+                  Sold
+                </button>
               ) : (
                 <>
+                  <button
+                    onClick={() => toggleSold(l.id, "sold")}
+                    disabled={togglingSoldId === l.id}
+                    title="Mark as sold"
+                    style={{ background: "none", border: `1px solid ${C.border}`, color: C.mutedDim, cursor: "pointer", padding: "3px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800, textTransform: "uppercase", opacity: togglingSoldId === l.id ? 0.5 : 1 }}
+                  >
+                    Mark sold
+                  </button>
                   <button
                     onClick={() => setEditingListing(l)}
                     title="Edit listing"
@@ -3431,7 +3326,6 @@ export default function HunT() {
   const [listings, setListings] = useState([]);
   const [loadingListings, setLoadingListings] = useState(true);
   const [openChatWith, setOpenChatWith] = useState(null);
-  const [checkoutListing, setCheckoutListing] = useState(null);
   const [viewProfileUsername, setViewProfileUsername] = useState(null);
   const [deepLinkListingId, setDeepLinkListingId] = useState(null);
   const [deepLinkPostId, setDeepLinkPostId] = useState(null);
@@ -3580,7 +3474,6 @@ export default function HunT() {
           listings={listings}
           loading={loadingListings}
           onOpenChat={goChat}
-          onBuyNow={(l) => setCheckoutListing(l)}
           currentUser={user}
           isMinor={isMinor}
           isRestricted={isRestricted}
@@ -3617,10 +3510,6 @@ export default function HunT() {
           unreadByUser={unreadByUser}
           onOpenChat={goChat}
         />
-      )}
-
-      {checkoutListing && !isMinor && !isRestricted && (
-        <CheckoutModal listing={checkoutListing} buyer={user} onClose={() => setCheckoutListing(null)} onComplete={(u) => setListings(u)} />
       )}
 
       {viewProfileUsername && (
