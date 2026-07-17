@@ -4,7 +4,7 @@ import {
   Wrench, ShieldCheck, Send, Car, Fuel, Clock, AlertTriangle,
   CreditCard, CheckCircle, Lock, Package, Shield, Radio, Flag,
   MapPin, Trash2, Navigation, Star, Pencil, Image as ImageIcon, Bell,
-  Heart, MessageSquare, Users, Globe, EyeOff, UserPlus, UserCheck, Camera,
+  Heart, MessageSquare, Users, Globe, EyeOff, UserPlus, UserCheck, Camera, Eye, Mail,
 } from "lucide-react";
 import { signUp, signIn, signOut, sendPasswordReset, updatePassword, updateProfile, getSessionUser, onAuthChange, fileReport, getPublicProfile, submitReview, getReviews, getMyReviewedListingIds } from "./authClient.js";
 import { uploadListingPhotos, deleteListingPhotos, validatePhotoFiles, MAX_PHOTOS, uploadAvatar } from "./photos.js";
@@ -302,6 +302,36 @@ function Field({ as = "input", style = {}, ...props }) {
     />
   );
 }
+
+function PasswordField({ value, onChange, placeholder, ...props }) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div style={{ position: "relative" }}>
+      <Field
+        type={visible ? "text" : "password"}
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        style={{ paddingRight: 42 }}
+        {...props}
+      />
+      <button
+        type="button"
+        onClick={() => setVisible((v) => !v)}
+        tabIndex={-1}
+        title={visible ? "Hide password" : "Show password"}
+        style={{
+          position: "absolute", top: "50%", right: 12, transform: "translateY(-50%)",
+          background: "none", border: "none", color: C.mutedDim, cursor: "pointer",
+          padding: 4, display: "flex", alignItems: "center",
+        }}
+      >
+        {visible ? <EyeOff size={16} /> : <Eye size={16} />}
+      </button>
+    </div>
+  );
+}
+
 
 function Btn({ children, variant = "primary", style = {}, disabled, ...props }) {
   const [hover, setHover] = useState(false);
@@ -788,7 +818,7 @@ function AuthScreen({ onLogin }) {
         )}
 
         <Field type="email" value={form.email} onChange={(e) => update("email", e.target.value)} placeholder="Email" />
-        <Field type="password" value={form.password} onChange={(e) => update("password", e.target.value)} placeholder="Password" />
+        <PasswordField value={form.password} onChange={(e) => update("password", e.target.value)} placeholder="Password" />
         {mode === "signup" && (
           <p style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: C.mutedDim, marginLeft: 4 }}>
             <Lock size={10} /> At least 8 characters. You'll confirm this email before logging in.
@@ -867,8 +897,8 @@ function ResetPasswordScreen({ onDone }) {
         </div>
       </div>
       <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Field type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="New password" />
-        <Field type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="Confirm new password" />
+        <PasswordField value={password} onChange={(e) => setPassword(e.target.value)} placeholder="New password" />
+        <PasswordField value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="Confirm new password" />
         {error && <ErrorNote>{error}</ErrorNote>}
         <Btn type="submit" disabled={busy}>{busy ? "Saving..." : "Save new password"}</Btn>
       </form>
@@ -2679,6 +2709,64 @@ function AppearanceCard({ theme, onThemeChange }) {
   );
 }
 
+/* ---------------------------------------------------------- SECURITY (change password, verified by email) */
+function SecurityCard({ user }) {
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState("");
+
+  const requestChange = async () => {
+    if (!user.email) return;
+    setBusy(true);
+    setError("");
+    try {
+      await sendPasswordReset(user.email);
+      setSent(true);
+    } catch (err) {
+      setError(err?.message || "Couldn't send the verification email. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 24 }}>
+      <p style={{ fontSize: 11, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.muted, marginBottom: 12 }}>
+        Security
+      </p>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+        <Mail size={15} color={C.mutedDim} style={{ flexShrink: 0 }} />
+        <div style={{ minWidth: 0 }}>
+          <p style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.mutedDim }}>Login email</p>
+          <p style={{ fontSize: 13, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.email}</p>
+        </div>
+      </div>
+
+      {sent ? (
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-start", background: C.accentDim, border: `1px solid ${C.accentLine}`, borderRadius: 10, padding: "10px 12px" }}>
+          <CheckCircle size={14} color={C.accent} style={{ marginTop: 1, flexShrink: 0 }} />
+          <p style={{ fontSize: 12, color: C.accent, lineHeight: 1.5 }}>
+            Check {user.email} — click the link we sent to verify it's you, then you'll be able to
+            set a new password.
+          </p>
+        </div>
+      ) : (
+        <>
+          <p style={{ fontSize: 12, color: C.mutedDim, lineHeight: 1.5, marginBottom: 12 }}>
+            To change your password, we'll send a verification link to your email first — that's
+            what confirms it's really you.
+          </p>
+          <Btn variant="ghost" onClick={requestChange} disabled={busy} style={{ width: "100%" }}>
+            <Lock size={14} /> {busy ? "Sending..." : "Change password"}
+          </Btn>
+        </>
+      )}
+      {error && <div style={{ marginTop: 10 }}><ErrorNote>{error}</ErrorNote></div>}
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------- PROFILE */
 function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileUpdated, theme, onThemeChange }) {
   const mine = listings.filter((l) => l.seller === user.username);
@@ -2793,6 +2881,8 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileU
       <PersonalInfoCard user={user} onProfileUpdated={onProfileUpdated} />
 
       <AppearanceCard theme={theme} onThemeChange={onThemeChange} />
+
+      <SecurityCard user={user} />
 
       <Section title="My listings" count={mine.length} empty="You haven't posted anything yet.">
         {mine.map((l) => (
