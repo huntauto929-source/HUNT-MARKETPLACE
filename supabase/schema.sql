@@ -54,8 +54,18 @@ create table if not exists profiles (
   contact_value text,
   restricted boolean not null default false,
   report_count int not null default 0,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- Personal info is private by default. A member opts in per field to
+  -- surface a privacy-safe derivative of it (age, not raw dob; contact
+  -- value as-is) on their public profile.
+  dob_public boolean not null default false,
+  contact_public boolean not null default false
 );
+
+-- Safe to re-run on an existing database that already has the table
+-- from before these columns existed.
+alter table profiles add column if not exists dob_public boolean not null default false;
+alter table profiles add column if not exists contact_public boolean not null default false;
 
 alter table profiles enable row level security;
 
@@ -85,13 +95,27 @@ create policy "Users can update their own profile"
     and report_count = (select report_count from profiles where id = auth.uid())
   );
 
--- Public, personal-info-free view of a profile. Views in Postgres run
--- with the privileges of the view's owner (not the visitor), so this
--- can safely expose just these three columns to everyone — including
--- anonymous visitors — without ever touching dob/contact_value, even
--- though those columns exist on the underlying table.
+-- Public, personal-info-free-by-default view of a profile. Views in
+-- Postgres run with the privileges of the view's owner (not the
+-- visitor), so this can safely expose these columns to everyone —
+-- including anonymous visitors — while keeping dob/contact_value
+-- hidden unless the member has explicitly opted in.
+--
+-- Note we expose AGE (an integer, derived from dob), never the raw
+-- date of birth, even when dob_public is true — that's enough for
+-- other members to see, without handing out an exact birthdate.
 create or replace view public_profiles as
-  select id, username, name, created_at
+  select
+    id,
+    username,
+    name,
+    created_at,
+    case when dob_public and dob is not null
+      then date_part('year', age(dob))::int
+      else null
+    end as age,
+    case when contact_public then contact_method else null end as contact_method,
+    case when contact_public then contact_value else null end as contact_value
   from profiles;
 
 grant select on public_profiles to anon, authenticated;
@@ -181,3 +205,91 @@ drop trigger if exists on_report_created on reports;
 create trigger on_report_created
   after insert on reports
   for each row execute procedure public.handle_new_report();
+
+
+-- ---------------------------------------------------------------
+-- Reviews
+-- ---------------------------------------------------------------
+-- One review per (reviewer, listing) — a buyer can leave one review
+-- for the seller of a given listing after buying it. The app only
+-- surfaces the "Leave a review" button from a completed order, but
+-- the uniqueness constraint is what actually stops someone from
+-- spamming multiple reviews at the DB level.
+
+create table if not exists reviews (
+  id uuid primary key default gen_random_uuid(),
+  reviewer_id uuid not null references auth.users (id) on delete cascade,
+  reviewer_username text not null,
+  target_username text not null,
+  listing_id text not null,
+  listing_title text,
+  rating int not null check (rating between 1 and 5),
+  comment text,
+  created_at timestamptz not null default now(),
+  unique (reviewer_id, listing_id)
+);
+
+alter table reviews enable row level security;
+
+-- Reviews are public — that's the point of them — but only the
+-- author can ever create one, and only as themselves. There's no
+-- update/delete policy, so reviews can't be edited after posting
+-- (keeps them trustworthy); reach into the dashboard directly for
+-- moderation takedowns.
+create policy "Reviews are publicly readable"
+  on reviews for select
+  using (true);
+
+create policy "Users can leave reviews as themselves"
+  on reviews for insert
+  with check (auth.uid() = reviewer_id);
+
+-- Re-published with rating + review_count folded in, so the app can
+-- get a member's public info and their review summary in one query.
+create or replace view public_profiles as
+  select
+    p.id,
+    p.username,
+    p.name,
+    p.created_at,
+    case when p.dob_public and p.dob is not null
+      then date_part('year', age(p.dob))::int
+      else null
+    end as age,
+    case when p.contact_public then p.contact_method else null end as contact_method,
+    case when p.contact_public then p.contact_value else null end as contact_value,
+    coalesce(r.review_count, 0) as review_count,
+    r.avg_rating
+  from profiles p
+  left join (
+    select target_username, count(*) as review_count, round(avg(rating)::numeric, 1) as avg_rating
+    from reviews
+    group by target_username
+  ) r on r.target_username = p.username;
+
+grant select on public_profiles to anon, authenticated;
+grant select on reviews to anon, authenticated;
+
+
+-- ---------------------------------------------------------------
+-- Listing photos (Supabase Storage)
+-- ---------------------------------------------------------------
+-- One public bucket. Uploads are only accepted into a folder named
+-- after the uploader's own auth uid (`<uid>/<file>`), and only that
+-- uid can delete from it — enforced below, not just by app code.
+
+insert into storage.buckets (id, name, public)
+values ('listing-photos', 'listing-photos', true)
+on conflict (id) do nothing;
+
+create policy "Listing photos are publicly readable"
+  on storage.objects for select
+  using (bucket_id = 'listing-photos');
+
+create policy "Users can upload their own listing photos"
+  on storage.objects for insert
+  with check (bucket_id = 'listing-photos' and (storage.foldername(name))[1] = auth.uid()::text);
+
+create policy "Users can delete their own listing photos"
+  on storage.objects for delete
+  using (bucket_id = 'listing-photos' and (storage.foldername(name))[1] = auth.uid()::text);

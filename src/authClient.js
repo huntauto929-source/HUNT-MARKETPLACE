@@ -12,12 +12,14 @@ import { supabase } from "./supabaseClient.js";
  * is created automatically by a database trigger when someone signs up.
  */
 
-export async function signUp({ email, password, username, name, dob }) {
+export async function signUp({ email, password, username, name }) {
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: {
-      data: { username: username.toLowerCase(), name, dob },
+      // dob is deliberately not collected here anymore — it's added
+      // later, by choice, from the private profile settings screen.
+      data: { username: username.toLowerCase(), name },
     },
   });
   if (error) throw error;
@@ -84,11 +86,88 @@ export async function fileReport({ targetUsername, listingId, reason }) {
   if (error) throw error;
 }
 
+export async function updateProfile({ name, dob, contactMethod, contactValue, dobPublic, contactPublic }) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error("You need to be logged in to update your profile.");
+
+  const patch = {};
+  if (name !== undefined) patch.name = name;
+  if (dob !== undefined) patch.dob = dob || null;
+  if (contactMethod !== undefined) patch.contact_method = contactMethod;
+  if (contactValue !== undefined) patch.contact_value = contactValue;
+  if (dobPublic !== undefined) patch.dob_public = dobPublic;
+  if (contactPublic !== undefined) patch.contact_public = contactPublic;
+
+  const { data: profile, error } = await supabase
+    .from("profiles")
+    .update(patch)
+    .eq("id", session.user.id)
+    .select()
+    .single();
+  if (error) throw error;
+
+  return {
+    name: profile.name,
+    dob: profile.dob || "",
+    contactMethod: profile.contact_method || null,
+    contactValue: profile.contact_value || null,
+    dobPublic: !!profile.dob_public,
+    contactPublic: !!profile.contact_public,
+  };
+}
+
+export async function submitReview({ targetUsername, listingId, listingTitle, rating, comment }) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error("You need to be logged in to leave a review.");
+  const meta = session.user.user_metadata || {};
+  const { error } = await supabase.from("reviews").insert({
+    reviewer_id: session.user.id,
+    reviewer_username: (meta.username || "").toLowerCase(),
+    target_username: targetUsername.toLowerCase(),
+    listing_id: listingId,
+    listing_title: listingTitle || null,
+    rating,
+    comment: comment?.trim() || null,
+  });
+  if (error) {
+    if (error.code === "23505") throw new Error("You've already reviewed this purchase.");
+    throw error;
+  }
+}
+
+export async function getReviews(username) {
+  const { data, error } = await supabase
+    .from("reviews")
+    .select("id, reviewer_username, rating, comment, created_at, listing_title")
+    .eq("target_username", username.trim().toLowerCase())
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data || []).map((r) => ({
+    id: r.id,
+    reviewerUsername: r.reviewer_username,
+    rating: r.rating,
+    comment: r.comment,
+    listingTitle: r.listing_title,
+    createdAt: new Date(r.created_at).getTime(),
+  }));
+}
+
+export async function getMyReviewedListingIds() {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) return [];
+  const { data, error } = await supabase
+    .from("reviews")
+    .select("listing_id")
+    .eq("reviewer_id", session.user.id);
+  if (error) throw error;
+  return (data || []).map((r) => r.listing_id);
+}
+
 export async function getPublicProfile(username) {
   const uname = username.trim().toLowerCase();
   const { data: profile, error } = await supabase
     .from("public_profiles")
-    .select("username, name, created_at")
+    .select("username, name, created_at, age, contact_method, contact_value, review_count, avg_rating")
     .eq("username", uname)
     .maybeSingle();
   if (error) throw error;
@@ -97,6 +176,12 @@ export async function getPublicProfile(username) {
     username: profile.username,
     name: profile.name,
     createdAt: new Date(profile.created_at).getTime(),
+    // Only present when the member opted in — see public_profiles view.
+    age: profile.age ?? null,
+    contactMethod: profile.contact_method || null,
+    contactValue: profile.contact_value || null,
+    reviewCount: profile.review_count || 0,
+    avgRating: profile.avg_rating ?? null,
   };
 }
 
@@ -120,8 +205,10 @@ async function fetchProfileForSession(session) {
     username: profile?.username || meta.username || "",
     name: profile?.name || meta.name || "",
     dob: profile?.dob || meta.dob || "",
+    dobPublic: !!profile?.dob_public,
     contactMethod: profile?.contact_method || null,
     contactValue: profile?.contact_value || null,
+    contactPublic: !!profile?.contact_public,
     restricted: profile?.restricted || false,
     reportCount: profile?.report_count || 0,
     createdAt: profile?.created_at ? new Date(profile.created_at).getTime() : Date.now(),

@@ -3,9 +3,14 @@ import {
   Search, Plus, MessageCircle, User, LogOut, X, ChevronLeft,
   Wrench, ShieldCheck, Send, Car, Fuel, Clock, AlertTriangle,
   CreditCard, CheckCircle, Lock, Package, Shield, Radio, Flag,
-  MapPin, Trash2, Navigation,
+  MapPin, Trash2, Navigation, Star, Pencil, Image as ImageIcon, Bell,
 } from "lucide-react";
-import { signUp, signIn, signOut, sendPasswordReset, updatePassword, getSessionUser, onAuthChange, fileReport, getPublicProfile } from "./authClient.js";
+import { signUp, signIn, signOut, sendPasswordReset, updatePassword, updateProfile, getSessionUser, onAuthChange, fileReport, getPublicProfile, submitReview, getReviews, getMyReviewedListingIds } from "./authClient.js";
+import { uploadListingPhotos, deleteListingPhotos, validatePhotoFiles, MAX_PHOTOS } from "./photos.js";
+import {
+  getLastRead, setLastRead, notificationsSupported, notificationPermission,
+  requestNotificationPermission, maybeNotifyNewMessage,
+} from "./notifications.js";
 import { geocodeAddress, reverseGeocode, getCurrentPosition, googleMapsEmbedUrl, googleMapsDirectionsUrl } from "./geo.js";
 
 /* ===========================================================
@@ -178,7 +183,7 @@ function SecureChip() {
   );
 }
 
-function MinorChip() {
+function MinorChip({ unverified = false }) {
   return (
     <div
       style={{
@@ -189,7 +194,7 @@ function MinorChip() {
       }}
     >
       <ShieldCheck size={11} />
-      Limited access · under 18
+      {unverified ? "Limited access · add birthday" : "Limited access · under 18"}
     </div>
   );
 }
@@ -287,6 +292,99 @@ function ErrorNote({ children }) {
   );
 }
 
+/* ---------------------------------------------------------- PHOTO PICKER (used by post + edit listing) */
+function PhotoPicker({ photos, setPhotos, disabled }) {
+  const inputRef = useRef(null);
+  const [error, setError] = useState("");
+
+  const addFiles = (fileList) => {
+    setError("");
+    try {
+      const valid = validatePhotoFiles(fileList, photos.length);
+      const additions = valid.map((f) => ({
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        file: f,
+        url: URL.createObjectURL(f),
+      }));
+      setPhotos((p) => [...p, ...additions]);
+    } catch (err) {
+      setError(err?.message || "Couldn't add that photo.");
+    }
+  };
+
+  const remove = (id) => setPhotos((p) => p.filter((ph) => ph.id !== id));
+
+  return (
+    <div>
+      <label style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: C.muted, marginLeft: 4 }}>
+        Photos ({photos.length}/{MAX_PHOTOS})
+      </label>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+        {photos.map((p) => (
+          <div key={p.id} style={{ position: "relative", width: 72, height: 72, borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}`, flexShrink: 0 }}>
+            <img src={p.url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+            {!disabled && (
+              <button
+                type="button"
+                onClick={() => remove(p.id)}
+                title="Remove photo"
+                style={{ position: "absolute", top: 3, right: 3, background: "rgba(0,0,0,0.65)", border: "none", borderRadius: 999, color: "#fff", width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0 }}
+              >
+                <X size={11} />
+              </button>
+            )}
+          </div>
+        ))}
+        {photos.length < MAX_PHOTOS && !disabled && (
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            style={{ width: 72, height: 72, borderRadius: 10, border: `1px dashed ${C.border}`, background: "none", color: C.mutedDim, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", gap: 3, flexShrink: 0 }}
+          >
+            <ImageIcon size={16} />
+            <span style={{ fontSize: 9, fontWeight: 700 }}>Add</span>
+          </button>
+        )}
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        hidden
+        onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
+      />
+      {error && <p style={{ fontSize: 11, color: C.warn, marginTop: 6 }}>{error}</p>}
+      <p style={{ fontSize: 10.5, color: C.mutedDim, marginTop: 6, lineHeight: 1.5 }}>
+        Optional, up to {MAX_PHOTOS}. JPEG, PNG, WEBP, or GIF, under 8MB each.
+      </p>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------- STAR RATING */
+function StarRating({ value, onChange, size = 18, readOnly = false }) {
+  const [hover, setHover] = useState(0);
+  const display = hover || value;
+  return (
+    <div style={{ display: "inline-flex", gap: 2 }}>
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button
+          key={n}
+          type="button"
+          disabled={readOnly}
+          onClick={() => onChange?.(n)}
+          onMouseEnter={() => !readOnly && setHover(n)}
+          onMouseLeave={() => !readOnly && setHover(0)}
+          style={{ background: "none", border: "none", padding: 0, cursor: readOnly ? "default" : "pointer", lineHeight: 0 }}
+        >
+          <Star size={size} color={C.accent} fill={n <= display ? C.accent : "transparent"} />
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------- AUTH SCREEN */
 function AuthShell({ children }) {
   return (
@@ -310,7 +408,7 @@ function AuthShell({ children }) {
 
 function AuthScreen({ onLogin }) {
   const [mode, setMode] = useState("signup"); // signup | login | forgot | check-email
-  const [form, setForm] = useState({ name: "", username: "", dob: "", email: "", password: "" });
+  const [form, setForm] = useState({ name: "", username: "", email: "", password: "" });
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -330,7 +428,7 @@ function AuthScreen({ onLogin }) {
   const doSignUp = async (e) => {
     e.preventDefault();
     setError("");
-    if (!form.name.trim() || !form.username.trim() || !form.dob || !form.email.trim() || !form.password) {
+    if (!form.name.trim() || !form.username.trim() || !form.email.trim() || !form.password) {
       setError("Fill in every field to create your ID.");
       return;
     }
@@ -350,12 +448,6 @@ function AuthScreen({ onLogin }) {
       setError("You need to agree to the Terms and Privacy Notice to create an ID.");
       return;
     }
-    const age = calcAge(form.dob);
-    if (age === null) { setError("Enter a valid date of birth."); return; }
-    if (age < ADMIN_MIN_AGE) {
-      setError(`HunT is for members ${ADMIN_MIN_AGE}+. This account can't be created.`);
-      return;
-    }
     setBusy(true);
     try {
       await signUp({
@@ -363,7 +455,6 @@ function AuthScreen({ onLogin }) {
         password: form.password,
         username: form.username.trim(),
         name: form.name.trim(),
-        dob: form.dob,
       });
       setNotice(`We sent a confirmation link to ${form.email.trim()}. Click it, then come back and log in.`);
       setMode("check-email");
@@ -475,14 +566,6 @@ function AuthScreen({ onLogin }) {
           <>
             <Field value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="Full name" />
             <Field value={form.username} onChange={(e) => update("username", e.target.value)} placeholder="Choose a HunT ID (username)" />
-            <div>
-              <label style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: C.muted, marginLeft: 4 }}>
-                Date of birth
-              </label>
-              <div style={{ marginTop: 5 }}>
-                <Field type="date" value={form.dob} onChange={(e) => update("dob", e.target.value)} />
-              </div>
-            </div>
           </>
         )}
 
@@ -508,7 +591,8 @@ function AuthScreen({ onLogin }) {
         {mode === "signup" && (
           <>
             <p style={{ fontSize: 10.5, color: C.mutedDim, lineHeight: 1.6, padding: "0 4px" }}>
-              You must be {ADMIN_MIN_AGE} or older to create a HunT ID.
+              You must be {ADMIN_MIN_AGE} or older to use HunT. We'll ask for your birthday from
+              your profile settings — buying and a few other features stay locked until you add it.
             </p>
             <label style={{ display: "flex", alignItems: "flex-start", gap: 10, fontSize: 11.5, color: C.muted, padding: "2px 4px", cursor: "pointer", lineHeight: 1.5 }}>
               <input
@@ -576,7 +660,7 @@ function ResetPasswordScreen({ onDone }) {
 
 
 /* ---------------------------------------------------------- NAV */
-function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRestricted }) {
+function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRestricted, ageUnverified, unreadTotal = 0 }) {
   const items = [
     { id: "home", label: "Market", icon: Search },
     { id: "post", label: "Sell", icon: Plus },
@@ -606,7 +690,7 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRest
           Automobile marketplace
         </p>
         <div className="hidden lg:flex" style={{ marginTop: 8 }}>
-          {isRestricted ? <RestrictedChip /> : isMinor ? <MinorChip /> : <SecureChip />}
+          {isRestricted ? <RestrictedChip /> : isMinor ? <MinorChip unverified={ageUnverified} /> : <SecureChip />}
         </div>
         <nav style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 24 }}>
           {items.map((it) => (
@@ -619,7 +703,20 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRest
               className="lg:justify-start justify-center"
               title={it.label}
             >
-              <it.icon size={18} />
+              <span style={{ position: "relative", display: "inline-flex" }}>
+                <it.icon size={18} />
+                {it.id === "chat" && unreadTotal > 0 && (
+                  <span
+                    style={{
+                      position: "absolute", top: -6, right: -8, minWidth: 15, height: 15, padding: "0 3px",
+                      borderRadius: 999, background: C.warn, color: "#0a0a0a", fontSize: 9, fontWeight: 900,
+                      display: "flex", alignItems: "center", justifyContent: "center", fontFamily: MONO,
+                    }}
+                  >
+                    {unreadTotal > 9 ? "9+" : unreadTotal}
+                  </span>
+                )}
+              </span>
               <span className="hidden lg:inline">{it.label}</span>
             </button>
           ))}
@@ -652,7 +749,7 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRest
         }}
       >
         <Logo size={20} />
-        {isRestricted ? <RestrictedChip /> : isMinor ? <MinorChip /> : <SecureChip />}
+        {isRestricted ? <RestrictedChip /> : isMinor ? <MinorChip unverified={ageUnverified} /> : <SecureChip />}
         <button onClick={onLogout} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
           <LogOut size={18} />
         </button>
@@ -681,7 +778,20 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRest
               color: screen === it.id ? C.accent : C.mutedDim,
             }}
           >
-            <it.icon size={19} />
+            <span style={{ position: "relative", display: "inline-flex" }}>
+              <it.icon size={19} />
+              {it.id === "chat" && unreadTotal > 0 && (
+                <span
+                  style={{
+                    position: "absolute", top: -5, right: -7, minWidth: 14, height: 14, padding: "0 3px",
+                    borderRadius: 999, background: C.warn, color: "#0a0a0a", fontSize: 8.5, fontWeight: 900,
+                    display: "flex", alignItems: "center", justifyContent: "center", fontFamily: MONO,
+                  }}
+                >
+                  {unreadTotal > 9 ? "9+" : unreadTotal}
+                </span>
+              )}
+            </span>
             {it.label}
           </button>
         ))}
@@ -691,7 +801,7 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRest
 }
 
 /* ---------------------------------------------------------- HOME / MARKET */
-function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMinor, isRestricted, onViewProfile }) {
+function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMinor, isRestricted, ageUnverified, onViewProfile }) {
   const [query, setQuery] = useState("");
   const [cat, setCat] = useState("all");
   const [reportTarget, setReportTarget] = useState(null);
@@ -747,8 +857,9 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
         <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: C.warnDim, border: `1px solid rgba(255,138,101,0.4)`, borderRadius: 12, padding: "12px 14px", marginBottom: 18 }}>
           <ShieldCheck size={16} color={C.warn} style={{ flexShrink: 0, marginTop: 1 }} />
           <p style={{ fontSize: 12, color: C.warn, lineHeight: 1.5 }}>
-            You're browsing in limited mode. Members under 18 can browse listings and message
-            sellers, but buying and selling unlock at 18.
+            {ageUnverified
+              ? "You're browsing in limited mode. Add your birthday in Profile settings to unlock buying and selling."
+              : "You're browsing in limited mode. Members under 18 can browse listings and message sellers, but buying and selling unlock at 18."}
           </p>
         </div>
       )}
@@ -814,8 +925,12 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
                       <span style={{ fontFamily: MONO, fontSize: 11, color: C.mutedDim, width: 26 }}>{String(idx + 1).padStart(2, "0")}</span>
-                      <div style={{ width: 44, height: 44, borderRadius: 10, background: C.panel2, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                        <CatIcon size={19} color={C.accent} />
+                      <div style={{ width: 44, height: 44, borderRadius: 10, background: C.panel2, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, overflow: "hidden" }}>
+                        {l.photos?.[0] ? (
+                          <img src={l.photos[0]} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        ) : (
+                          <CatIcon size={19} color={C.accent} />
+                        )}
                       </div>
                     </div>
 
@@ -875,7 +990,7 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
                                 style={{ flex: 1, padding: "8px 6px", fontSize: 10.5 }}
                                 onClick={() => onBuyNow(l)}
                                 disabled={isMinor || isRestricted}
-                                title={isMinor ? "Buying unlocks at 18" : isRestricted ? "Buying is paused while your account is under review" : undefined}
+                                title={isMinor ? (ageUnverified ? "Add your birthday in Profile settings to unlock buying" : "Buying unlocks at 18") : isRestricted ? "Buying is paused while your account is under review" : undefined}
                               >
                                 {isMinor || isRestricted ? <Lock size={12} /> : <CreditCard size={12} />} Buy
                               </Btn>
@@ -906,12 +1021,78 @@ function HomeScreen({ listings, loading, onOpenChat, onBuyNow, currentUser, isMi
   );
 }
 
-/* ---------------------------------------------------------- REPORT MODAL */
-/* ---------------------------------------------------------- PUBLIC PROFILE (no personal info) */
+/* ---------------------------------------------------------- REVIEW MODAL */
+function ReviewModal({ order, onClose, onSubmitted }) {
+  const [rating, setRating] = useState(5);
+  const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+    try {
+      await submitReview({
+        targetUsername: order.seller,
+        listingId: order.listingId,
+        listingTitle: order.title,
+        rating,
+        comment,
+      });
+      setDone(true);
+    } catch (err) {
+      setError(err?.message || "Couldn't submit your review. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.72)", zIndex: 30, display: "flex", alignItems: "flex-end", justifyContent: "center" }} className="md:items-center">
+      <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 18, width: "100%", maxWidth: 420 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: `1px solid ${C.borderSoft}` }}>
+          <h2 style={{ fontWeight: 900, fontSize: 17, display: "flex", alignItems: "center", gap: 8 }}>
+            <Star size={16} color={C.accent} /> Leave a review
+          </h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}><X size={20} /></button>
+        </div>
+        <div style={{ padding: "16px 20px" }}>
+          {done ? (
+            <div style={{ textAlign: "center", padding: "12px 0" }}>
+              <CheckCircle size={36} color={C.accent} style={{ margin: "0 auto 10px" }} />
+              <p style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Review posted</p>
+              <p style={{ color: C.muted, fontSize: 12, marginBottom: 20, lineHeight: 1.5 }}>
+                Thanks — it's now visible on @{order.seller}'s public profile.
+              </p>
+              <Btn onClick={onSubmitted} style={{ width: "100%" }}>Done</Btn>
+            </div>
+          ) : (
+            <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px" }}>
+                <p style={{ fontWeight: 700, fontSize: 13 }}>{order.title}</p>
+                <p style={{ color: C.mutedDim, fontSize: 11, fontFamily: MONO }}>@{order.seller}</p>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                <StarRating value={rating} onChange={setRating} size={26} />
+                <p style={{ fontSize: 11, color: C.mutedDim, fontFamily: MONO }}>{rating} / 5</p>
+              </div>
+              <Field as="textarea" rows={3} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="How was the item and the seller? (optional)" style={{ resize: "none" }} />
+              {error && <ErrorNote>{error}</ErrorNote>}
+              <Btn type="submit" disabled={busy}>{busy ? "Posting..." : "Post review"}</Btn>
+            </form>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 function PublicProfileModal({ username, allListings, currentUser, onClose, onMessage }) {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [reviews, setReviews] = useState([]);
 
   useEffect(() => {
     let active = true;
@@ -920,6 +1101,7 @@ function PublicProfileModal({ username, allListings, currentUser, onClose, onMes
       .then((p) => { if (active) setProfile(p); })
       .catch((err) => { if (active) setError(err?.message || "Couldn't load this profile."); })
       .finally(() => { if (active) setLoading(false); });
+    getReviews(username).then((r) => { if (active) setReviews(r); }).catch(() => { if (active) setReviews([]); });
     return () => { active = false; };
   }, [username]);
 
@@ -947,12 +1129,36 @@ function PublicProfileModal({ username, allListings, currentUser, onClose, onMes
                 <div style={{ minWidth: 0 }}>
                   <h3 style={{ fontSize: 17, fontWeight: 900 }}>{profile.name}</h3>
                   <p style={{ color: C.muted, fontSize: 12, fontFamily: MONO }}>@{profile.username}</p>
+                  {profile.reviewCount > 0 && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 3 }}>
+                      <StarRating value={Math.round(profile.avgRating)} size={12} readOnly />
+                      <span style={{ fontSize: 11, color: C.mutedDim, fontFamily: MONO }}>
+                        {profile.avgRating} ({profile.reviewCount})
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", marginBottom: 18 }}>
-                <p style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.mutedDim, marginBottom: 3 }}>Member since</p>
-                <p style={{ fontSize: 13, fontWeight: 700 }}>{new Date(profile.createdAt).toLocaleDateString()}</p>
+              <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", marginBottom: 18, display: "flex", flexDirection: "column", gap: 10 }}>
+                <div>
+                  <p style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.mutedDim, marginBottom: 3 }}>Member since</p>
+                  <p style={{ fontSize: 13, fontWeight: 700 }}>{new Date(profile.createdAt).toLocaleDateString()}</p>
+                </div>
+                {profile.age != null && (
+                  <div>
+                    <p style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.mutedDim, marginBottom: 3 }}>Age</p>
+                    <p style={{ fontSize: 13, fontWeight: 700 }}>{profile.age}</p>
+                  </div>
+                )}
+                {profile.contactValue && (
+                  <div>
+                    <p style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.mutedDim, marginBottom: 3 }}>
+                      {profile.contactMethod === "email" ? "Email" : "Phone"}
+                    </p>
+                    <p style={{ fontSize: 13, fontWeight: 700 }}>{profile.contactValue}</p>
+                  </div>
+                )}
               </div>
 
               {profile.username !== currentUser.username && (
@@ -977,9 +1183,31 @@ function PublicProfileModal({ username, allListings, currentUser, onClose, onMes
                 </div>
               )}
 
+              <h4 style={{ fontSize: 11, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.muted, marginBottom: 10, marginTop: 20 }}>
+                Reviews ({reviews.length})
+              </h4>
+              {reviews.length === 0 ? (
+                <p style={{ color: C.mutedDim, fontSize: 13 }}>No reviews yet.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {reviews.map((r) => (
+                    <div key={r.id} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                        <StarRating value={r.rating} size={12} readOnly />
+                        <span style={{ fontSize: 10, color: C.mutedDim, fontFamily: MONO }}>{timeAgo(r.createdAt)}</span>
+                      </div>
+                      {r.comment && <p style={{ fontSize: 12.5, color: C.text, lineHeight: 1.5, marginBottom: 4 }}>{r.comment}</p>}
+                      <p style={{ fontSize: 10.5, color: C.mutedDim, fontFamily: MONO }}>
+                        @{r.reviewerUsername}{r.listingTitle ? ` · ${r.listingTitle}` : ""}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <p style={{ fontSize: 10.5, color: C.mutedDim, lineHeight: 1.6, marginTop: 20 }}>
-                HunT only shows a member's name, username, and listings here — never their email,
-                phone, or date of birth.
+                HunT only shows a member's name, username, listings, and reviews here — never their
+                email, phone, or date of birth, unless they've chosen to make them public.
               </p>
             </>
           )}
@@ -989,6 +1217,7 @@ function PublicProfileModal({ username, allListings, currentUser, onClose, onMes
   );
 }
 
+/* ---------------------------------------------------------- REPORT MODAL */
 function ReportModal({ listing, onClose }) {
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1139,15 +1368,17 @@ function LocationPicker({ value, onChange }) {
 }
 
 /* ---------------------------------------------------------- POST LISTING */
-function PostScreen({ user, onPosted, isMinor, isRestricted }) {
+function PostScreen({ user, onPosted, isMinor, isRestricted, ageUnverified }) {
   const [type, setType] = useState("item");
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState(CATEGORIES[0].id);
   const [price, setPrice] = useState("");
   const [description, setDescription] = useState("");
   const [location, setLocation] = useState(null);
+  const [photos, setPhotos] = useState([]);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [error, setError] = useState("");
 
   if (isRestricted) {
     return (
@@ -1169,11 +1400,13 @@ function PostScreen({ user, onPosted, isMinor, isRestricted }) {
       <div style={{ maxWidth: 460, margin: "0 auto", padding: "24px 16px" }}>
         <div style={{ border: `1px solid rgba(255,107,74,0.4)`, background: C.warnDim, borderRadius: 14, padding: "28px 20px", textAlign: "center" }}>
           <Lock size={28} color={C.warn} style={{ margin: "0 auto 12px" }} />
-          <h2 style={{ fontWeight: 900, fontSize: 16, marginBottom: 6, color: C.text }}>Selling unlocks at 18</h2>
+          <h2 style={{ fontWeight: 900, fontSize: 16, marginBottom: 6, color: C.text }}>
+            {ageUnverified ? "Add your birthday to sell" : "Selling unlocks at 18"}
+          </h2>
           <p style={{ color: C.warn, fontSize: 13, lineHeight: 1.6 }}>
-            Posting items or services on HunT involves buyers, payment, and shipping details, so
-            it's limited to members 18 and older. You can still browse the marketplace and message
-            sellers.
+            {ageUnverified
+              ? "Posting items or services involves buyers, payment, and shipping details, so we need your birthday first — add it in Profile settings. You can still browse and message sellers."
+              : "Posting items or services on HunT involves buyers, payment, and shipping details, so it's limited to members 18 and older. You can still browse the marketplace and message sellers."}
           </p>
         </div>
       </div>
@@ -1182,25 +1415,32 @@ function PostScreen({ user, onPosted, isMinor, isRestricted }) {
 
   const submit = async (e) => {
     e.preventDefault();
+    setError("");
     if (!title.trim() || !description.trim()) return;
     setBusy(true);
     try {
+      const filesToUpload = photos.filter((p) => p.file).map((p) => p.file);
+      const uploadedUrls = filesToUpload.length ? await uploadListingPhotos(filesToUpload) : [];
+      let uIdx = 0;
+      const photoUrls = photos.map((p) => (p.file ? uploadedUrls[uIdx++] : p.url));
+
       const existing = await window.storage.get("hunt:listings", true).catch(() => null);
       const arr = existing ? JSON.parse(existing.value) : [];
       const listing = {
         id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         type, category, title: title.trim(), price: price ? Number(price) : null,
-        description: description.trim(), location,
+        description: description.trim(), location, photos: photoUrls,
         seller: user.username, status: "active", createdAt: Date.now(),
       };
       arr.push(listing);
       await window.storage.set("hunt:listings", JSON.stringify(arr), true);
-      setTitle(""); setPrice(""); setDescription(""); setLocation(null);
+      setTitle(""); setPrice(""); setDescription(""); setLocation(null); setPhotos([]);
       setDone(true);
       onPosted(arr);
       setTimeout(() => setDone(false), 2500);
     } catch (err) {
       console.error(err);
+      setError(err?.message || "Couldn't post that listing. Try again.");
     } finally {
       setBusy(false);
     }
@@ -1234,6 +1474,8 @@ function PostScreen({ user, onPosted, isMinor, isRestricted }) {
         <Field value={price} onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ""))} placeholder={type === "item" ? "Price ($, optional)" : "Rate ($, optional)"} />
         <LocationPicker value={location} onChange={setLocation} />
         <Field as="textarea" rows={4} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Describe the condition, specs, or scope of work..." style={{ resize: "none" }} />
+        <PhotoPicker photos={photos} setPhotos={setPhotos} disabled={busy} />
+        {error && <ErrorNote>{error}</ErrorNote>}
         <Btn type="submit" disabled={busy}>{busy ? "Posting..." : "Post listing"}</Btn>
         {done && <p style={{ textAlign: "center", fontSize: 12, color: C.accent, fontWeight: 800 }}>Listing is live ✓</p>}
       </form>
@@ -1241,12 +1483,100 @@ function PostScreen({ user, onPosted, isMinor, isRestricted }) {
   );
 }
 
+/* ---------------------------------------------------------- EDIT LISTING (modal) */
+function EditListingModal({ listing, onClose, onSaved }) {
+  const [type, setType] = useState(listing.type || "item");
+  const [title, setTitle] = useState(listing.title || "");
+  const [category, setCategory] = useState(listing.category || CATEGORIES[0].id);
+  const [price, setPrice] = useState(listing.price != null ? String(listing.price) : "");
+  const [description, setDescription] = useState(listing.description || "");
+  const [location, setLocation] = useState(listing.location || null);
+  const [photos, setPhotos] = useState(
+    (listing.photos || []).map((url, i) => ({ id: `existing_${i}`, url }))
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const tabStyle = (active) => ({
+    flex: 1, padding: "9px 0", borderRadius: 8, fontSize: 11, fontWeight: 800,
+    textTransform: "uppercase", letterSpacing: "0.03em", border: "none", cursor: "pointer",
+    background: active ? C.accent : "transparent", color: active ? "#0a0a0a" : C.muted,
+  });
+
+  const save = async (e) => {
+    e.preventDefault();
+    setError("");
+    if (!title.trim() || !description.trim()) { setError("Title and description can't be empty."); return; }
+    setBusy(true);
+    try {
+      const filesToUpload = photos.filter((p) => p.file).map((p) => p.file);
+      const uploadedUrls = filesToUpload.length ? await uploadListingPhotos(filesToUpload) : [];
+      let uIdx = 0;
+      const photoUrls = photos.map((p) => (p.file ? uploadedUrls[uIdx++] : p.url));
+
+      // Any original photo the user removed in this edit gets cleaned
+      // up from storage too, so it doesn't sit around unreferenced.
+      const removedUrls = (listing.photos || []).filter((u) => !photoUrls.includes(u));
+      if (removedUrls.length) {
+        deleteListingPhotos(removedUrls).catch((err) => console.error("Couldn't clean up removed photos:", err));
+      }
+
+      const existing = await window.storage.get("hunt:listings", true).catch(() => null);
+      const arr = existing ? JSON.parse(existing.value) : [];
+      const updated = arr.map((l) => (l.id === listing.id ? {
+        ...l, type, category, title: title.trim(), price: price ? Number(price) : null,
+        description: description.trim(), location, photos: photoUrls,
+      } : l));
+      await window.storage.set("hunt:listings", JSON.stringify(updated), true);
+      onSaved(updated);
+    } catch (err) {
+      console.error(err);
+      setError(err?.message || "Couldn't save your changes. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.72)", zIndex: 30, display: "flex", alignItems: "flex-end", justifyContent: "center" }} className="md:items-center">
+      <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 18, width: "100%", maxWidth: 420, maxHeight: "88vh", overflowY: "auto" }} className="hunt-scroll">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: `1px solid ${C.borderSoft}`, position: "sticky", top: 0, background: C.bg }}>
+          <h2 style={{ fontWeight: 900, fontSize: 17 }}>Edit listing</h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}><X size={20} /></button>
+        </div>
+
+        <form onSubmit={save} style={{ padding: 20, display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", background: C.panel, borderRadius: 10, padding: 4, border: `1px solid ${C.border}` }}>
+            {[{ id: "item", label: "Item for sale" }, { id: "service", label: "Service offered" }].map((t) => (
+              <button key={t.id} type="button" onClick={() => setType(t.id)} style={tabStyle(type === t.id)}>{t.label}</button>
+            ))}
+          </div>
+          <Field value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" />
+          <Field as="select" value={category} onChange={(e) => setCategory(e.target.value)}>
+            {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+          </Field>
+          <Field value={price} onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ""))} placeholder={type === "item" ? "Price ($, optional)" : "Rate ($, optional)"} />
+          <LocationPicker value={location} onChange={setLocation} />
+          <Field as="textarea" rows={4} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Description" style={{ resize: "none" }} />
+          <PhotoPicker photos={photos} setPhotos={setPhotos} disabled={busy} />
+          {error && <ErrorNote>{error}</ErrorNote>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn type="submit" disabled={busy} style={{ flex: 1 }}>{busy ? "Saving..." : "Save changes"}</Btn>
+            <Btn type="button" variant="ghost" onClick={onClose} style={{ flex: 1 }}>Cancel</Btn>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------- CHAT */
-function ChatScreen({ user, openWith, setOpenWith, onViewProfile }) {
+function ChatScreen({ user, openWith, setOpenWith, onViewProfile, unreadByUser = {}, markRead, activeChatRef }) {
   const [conversations, setConversations] = useState([]);
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
   const [newTarget, setNewTarget] = useState("");
+  const [notifPermission, setNotifPermission] = useState(notificationPermission());
   const bottomRef = useRef(null);
 
   const loadConversations = useCallback(async () => {
@@ -1267,11 +1597,18 @@ function ChatScreen({ user, openWith, setOpenWith, onViewProfile }) {
     try {
       const res = await window.storage.get(chatKey(user.username, other), true);
       setMessages(res ? JSON.parse(res.value) : []);
+      // Actively viewing this conversation — keep it marked read as
+      // new messages roll in, so the badge doesn't pop back up.
+      markRead?.(other);
     } catch (_) { setMessages([]); }
-  }, [user.username]);
+  }, [user.username, markRead]);
 
   useEffect(() => { loadConversations(); }, [loadConversations]);
-  useEffect(() => { if (openWith) loadMessages(openWith); }, [openWith, loadMessages]);
+  useEffect(() => {
+    if (activeChatRef) activeChatRef.current = openWith || null;
+    if (openWith) { loadMessages(openWith); }
+    return () => { if (activeChatRef) activeChatRef.current = null; };
+  }, [openWith, loadMessages, activeChatRef]);
   useEffect(() => {
     const iv = setInterval(() => { openWith ? loadMessages(openWith) : loadConversations(); }, 3000);
     return () => clearInterval(iv);
@@ -1290,6 +1627,7 @@ function ChatScreen({ user, openWith, setOpenWith, onViewProfile }) {
       arr.push(msg);
       await window.storage.set(key, JSON.stringify(arr), true);
       setMessages(arr);
+      markRead?.(openWith);
       loadConversations();
     } catch (err) { console.error(err); }
   };
@@ -1299,6 +1637,11 @@ function ChatScreen({ user, openWith, setOpenWith, onViewProfile }) {
     if (!t || t === user.username) return;
     setOpenWith(t);
     setNewTarget("");
+  };
+
+  const enableNotifications = async () => {
+    const perm = await requestNotificationPermission();
+    setNotifPermission(perm);
   };
 
   if (openWith) {
@@ -1358,6 +1701,28 @@ function ChatScreen({ user, openWith, setOpenWith, onViewProfile }) {
       <h1 style={{ fontSize: 24, fontWeight: 900, marginTop: 6, marginBottom: 4 }}>Messages</h1>
       <p style={{ color: C.muted, fontSize: 13, marginBottom: 18 }}>Talk directly with buyers and sellers.</p>
 
+      {notificationsSupported() && notifPermission === "default" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, background: C.accentDim, border: `1px solid ${C.accentLine}`, borderRadius: 12, padding: "10px 14px", marginBottom: 18 }}>
+          <Bell size={16} color={C.accent} style={{ flexShrink: 0 }} />
+          <p style={{ fontSize: 12, color: C.accent, lineHeight: 1.4, flex: 1 }}>Get notified when someone messages you.</p>
+          <button
+            onClick={enableNotifications}
+            style={{ background: C.accent, color: "#0a0a0a", border: "none", borderRadius: 999, padding: "6px 12px", fontSize: 11, fontWeight: 800, textTransform: "uppercase", cursor: "pointer", flexShrink: 0 }}
+          >
+            Enable
+          </button>
+        </div>
+      )}
+      {notifPermission === "denied" && (
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-start", background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 14px", marginBottom: 18 }}>
+          <Bell size={14} color={C.mutedDim} style={{ flexShrink: 0, marginTop: 1 }} />
+          <p style={{ fontSize: 11.5, color: C.mutedDim, lineHeight: 1.5 }}>
+            Notifications are blocked for HunT in your browser. Turn them on from your browser's
+            site settings to get alerted about new messages.
+          </p>
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 8, marginBottom: 22 }}>
         <Field value={newTarget} onChange={(e) => setNewTarget(e.target.value)} onKeyDown={(e) => e.key === "Enter" && startNew()} placeholder="Start a chat by HunT ID..." />
         <Btn onClick={startNew} style={{ paddingLeft: 18, paddingRight: 18 }}>Chat</Btn>
@@ -1369,18 +1734,35 @@ function ChatScreen({ user, openWith, setOpenWith, onViewProfile }) {
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          {conversations.map((c) => (
-            <button
-              key={c}
-              onClick={() => setOpenWith(c)}
-              style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px", borderRadius: 10, border: "none", background: "transparent", cursor: "pointer", textAlign: "left" }}
-            >
-              <div style={{ width: 36, height: 36, borderRadius: 999, background: C.accent, color: "#0a0a0a", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 12, flexShrink: 0 }}>
-                {c[0]?.toUpperCase()}
-              </div>
-              <span style={{ fontWeight: 700, fontSize: 13, color: C.text, fontFamily: MONO }}>@{c}</span>
-            </button>
-          ))}
+          {conversations.map((c) => {
+            const unread = unreadByUser[c] || 0;
+            return (
+              <button
+                key={c}
+                onClick={() => setOpenWith(c)}
+                style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px", borderRadius: 10, border: "none", background: "transparent", cursor: "pointer", textAlign: "left" }}
+              >
+                <div style={{ position: "relative", flexShrink: 0 }}>
+                  <div style={{ width: 36, height: 36, borderRadius: 999, background: C.accent, color: "#0a0a0a", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 12 }}>
+                    {c[0]?.toUpperCase()}
+                  </div>
+                  {unread > 0 && (
+                    <span
+                      style={{
+                        position: "absolute", top: -3, right: -3, minWidth: 16, height: 16, padding: "0 3px",
+                        borderRadius: 999, background: C.warn, color: "#0a0a0a", fontSize: 9.5, fontWeight: 900,
+                        display: "flex", alignItems: "center", justifyContent: "center", fontFamily: MONO,
+                        border: `2px solid ${C.bg}`,
+                      }}
+                    >
+                      {unread > 9 ? "9+" : unread}
+                    </span>
+                  )}
+                </div>
+                <span style={{ fontWeight: unread > 0 ? 900 : 700, fontSize: 13, color: C.text, fontFamily: MONO }}>@{c}</span>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1508,11 +1890,168 @@ function CheckoutModal({ listing, buyer, onClose, onComplete }) {
   );
 }
 
+/* ---------------------------------------------------------- PRIVATE PERSONAL INFO (editable, privacy toggles) */
+function PersonalInfoCard({ user, onProfileUpdated }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(user.name || "");
+  const [dob, setDob] = useState(user.dob || "");
+  const [dobPublic, setDobPublic] = useState(!!user.dobPublic);
+  const [contactPublic, setContactPublic] = useState(!!user.contactPublic);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const age = calcAge(user.dob);
+
+  const startEditing = () => {
+    setName(user.name || "");
+    setDob(user.dob || "");
+    setDobPublic(!!user.dobPublic);
+    setContactPublic(!!user.contactPublic);
+    setError("");
+    setEditing(true);
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    setError("");
+    if (!name.trim()) { setError("Name can't be empty."); return; }
+    if (dob) {
+      const a = calcAge(dob);
+      if (a === null) { setError("Enter a valid date of birth."); return; }
+      if (a < ADMIN_MIN_AGE) { setError(`HunT is for members ${ADMIN_MIN_AGE}+ — this date makes you younger than that.`); return; }
+    }
+    setBusy(true);
+    try {
+      const patch = await updateProfile({
+        name: name.trim(),
+        dob: dob || null,
+        dobPublic,
+        contactPublic,
+      });
+      onProfileUpdated(patch);
+      setEditing(false);
+    } catch (err) {
+      setError(err?.message || "Couldn't save your changes. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rowStyle = { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 };
+  const labelStyle = { fontSize: 10, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.mutedDim, marginBottom: 3 };
+  const toggleStyle = { display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, color: C.muted, cursor: "pointer", marginTop: 6 };
+
+  if (!editing) {
+    return (
+      <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 24, display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <p style={{ fontSize: 11, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.muted }}>Personal info</p>
+          <button onClick={startEditing} style={{ background: "none", border: "none", color: C.accent, fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0 }}>
+            Edit
+          </button>
+        </div>
+
+        <div style={rowStyle}>
+          <div>
+            <p style={labelStyle}>Member since</p>
+            <p style={{ fontSize: 13, fontWeight: 700 }}>{new Date(user.createdAt).toLocaleDateString()}</p>
+          </div>
+        </div>
+
+        <div style={rowStyle}>
+          <div>
+            <p style={labelStyle}>Date of birth</p>
+            {user.dob ? (
+              <p style={{ fontSize: 13, fontWeight: 700 }}>
+                {new Date(user.dob).toLocaleDateString()} <span style={{ color: C.mutedDim, fontWeight: 500 }}>({age} yrs)</span>
+              </p>
+            ) : (
+              <p style={{ fontSize: 13, color: C.warn, display: "flex", alignItems: "center", gap: 6 }}>
+                <AlertTriangle size={12} /> Not added — buying &amp; selling stay locked
+              </p>
+            )}
+          </div>
+          <span style={{ fontSize: 10, fontFamily: MONO, textTransform: "uppercase", color: C.mutedDim, whiteSpace: "nowrap" }}>
+            <Lock size={10} style={{ verticalAlign: -1, marginRight: 3 }} />
+            {user.dobPublic ? "Age public" : "Private"}
+          </span>
+        </div>
+
+        {user.contactValue && (
+          <div style={rowStyle}>
+            <div>
+              <p style={labelStyle}>Linked {user.contactMethod === "email" ? "email" : "phone"}</p>
+              <p style={{ fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+                {user.contactValue}
+                {user.contactVerified && (
+                  <span style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10, fontWeight: 800, textTransform: "uppercase", color: C.accent }}>
+                    <ShieldCheck size={12} /> Verified
+                  </span>
+                )}
+              </p>
+            </div>
+            <span style={{ fontSize: 10, fontFamily: MONO, textTransform: "uppercase", color: C.mutedDim, whiteSpace: "nowrap" }}>
+              <Lock size={10} style={{ verticalAlign: -1, marginRight: 3 }} />
+              {user.contactPublic ? "Public" : "Private"}
+            </span>
+          </div>
+        )}
+
+        <p style={{ fontSize: 10.5, color: C.mutedDim, lineHeight: 1.5 }}>
+          Only your name and HunT ID show up on your public profile by default. Turn a field
+          public above if you want other members to see it.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={save} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 24, display: "flex", flexDirection: "column", gap: 14 }}>
+      <p style={{ fontSize: 11, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.muted }}>Edit personal info</p>
+
+      <div>
+        <label style={labelStyle}>Full name</label>
+        <div style={{ marginTop: 5 }}>
+          <Field value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" />
+        </div>
+      </div>
+
+      <div>
+        <label style={labelStyle}>Date of birth</label>
+        <div style={{ marginTop: 5 }}>
+          <Field type="date" value={dob} onChange={(e) => setDob(e.target.value)} />
+        </div>
+        <label style={toggleStyle}>
+          <input type="checkbox" checked={dobPublic} onChange={(e) => setDobPublic(e.target.checked)} style={{ width: 14, height: 14, accentColor: C.accent }} />
+          Show my age (not birthdate) on my public profile
+        </label>
+      </div>
+
+      {user.contactValue && (
+        <label style={toggleStyle}>
+          <input type="checkbox" checked={contactPublic} onChange={(e) => setContactPublic(e.target.checked)} style={{ width: 14, height: 14, accentColor: C.accent }} />
+          Show my linked {user.contactMethod === "email" ? "email" : "phone"} on my public profile
+        </label>
+      )}
+
+      {error && <ErrorNote>{error}</ErrorNote>}
+
+      <div style={{ display: "flex", gap: 10 }}>
+        <Btn type="submit" disabled={busy} style={{ flex: 1 }}>{busy ? "Saving..." : "Save"}</Btn>
+        <Btn type="button" variant="ghost" onClick={() => setEditing(false)} style={{ flex: 1 }}>Cancel</Btn>
+      </div>
+    </form>
+  );
+}
+
 /* ---------------------------------------------------------- PROFILE */
-function ProfileScreen({ user, listings, onLogout, onListingsChanged }) {
+function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileUpdated }) {
   const mine = listings.filter((l) => l.seller === user.username);
   const [orders, setOrders] = useState([]);
   const [deletingId, setDeletingId] = useState(null);
+  const [editingListing, setEditingListing] = useState(null);
+  const [reviewedIds, setReviewedIds] = useState([]);
+  const [reviewTarget, setReviewTarget] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -1521,6 +2060,7 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged }) {
         setOrders(res ? JSON.parse(res.value) : []);
       } catch (_) { setOrders([]); }
     })();
+    getMyReviewedListingIds().then(setReviewedIds).catch(() => setReviewedIds([]));
   }, []);
 
   const myPurchases = orders.filter((o) => o.buyer === user.username);
@@ -1532,8 +2072,12 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged }) {
     try {
       const res = await window.storage.get("hunt:listings", true).catch(() => null);
       const arr = res ? JSON.parse(res.value) : [];
+      const target = arr.find((l) => l.id === listingId);
       const updated = arr.filter((l) => l.id !== listingId);
       await window.storage.set("hunt:listings", JSON.stringify(updated), true);
+      if (target?.photos?.length) {
+        deleteListingPhotos(target.photos).catch((err) => console.error("Couldn't clean up listing photos:", err));
+      }
       onListingsChanged(updated);
     } catch (err) {
       console.error("Failed to remove listing:", err);
@@ -1574,27 +2118,7 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged }) {
         </div>
       </div>
 
-      <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 24, display: "flex", flexDirection: "column", gap: 12 }}>
-        <div>
-          <p style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.mutedDim, marginBottom: 3 }}>Member since</p>
-          <p style={{ fontSize: 13, fontWeight: 700 }}>{new Date(user.createdAt).toLocaleDateString()}</p>
-        </div>
-        {user.contactValue && (
-          <div>
-            <p style={{ fontSize: 10, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.mutedDim, marginBottom: 3 }}>
-              Linked {user.contactMethod === "email" ? "email" : "phone"}
-            </p>
-            <p style={{ fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
-              {user.contactValue}
-              {user.contactVerified && (
-                <span style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10, fontWeight: 800, textTransform: "uppercase", color: C.accent }}>
-                  <ShieldCheck size={12} /> Verified
-                </span>
-              )}
-            </p>
-          </div>
-        )}
-      </div>
+      <PersonalInfoCard user={user} onProfileUpdated={onProfileUpdated} />
 
       <Section title="My listings" count={mine.length} empty="You haven't posted anything yet.">
         {mine.map((l) => (
@@ -1609,14 +2133,23 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged }) {
               {l.status === "sold" ? (
                 <span style={{ fontSize: 10, textTransform: "uppercase", fontWeight: 800, color: "#0a0a0a", background: C.accent, padding: "2px 6px", borderRadius: 4 }}>Sold</span>
               ) : (
-                <button
-                  onClick={() => removeListing(l.id)}
-                  disabled={deletingId === l.id}
-                  title="Remove listing"
-                  style={{ background: "none", border: "none", color: C.warn, cursor: "pointer", padding: 4, display: "flex", alignItems: "center", opacity: deletingId === l.id ? 0.5 : 1 }}
-                >
-                  <Trash2 size={15} />
-                </button>
+                <>
+                  <button
+                    onClick={() => setEditingListing(l)}
+                    title="Edit listing"
+                    style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 4, display: "flex", alignItems: "center" }}
+                  >
+                    <Pencil size={15} />
+                  </button>
+                  <button
+                    onClick={() => removeListing(l.id)}
+                    disabled={deletingId === l.id}
+                    title="Remove listing"
+                    style={{ background: "none", border: "none", color: C.warn, cursor: "pointer", padding: 4, display: "flex", alignItems: "center", opacity: deletingId === l.id ? 0.5 : 1 }}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -1624,7 +2157,27 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged }) {
       </Section>
 
       <Section title="My purchases" count={myPurchases.length} empty="Nothing bought yet.">
-        {myPurchases.map((o) => <Row key={o.id} title={o.title} sub={`$${o.price} · from @${o.seller} · ${timeAgo(o.createdAt)}`} />)}
+        {myPurchases.map((o) => (
+          <Row
+            key={o.id}
+            title={o.title}
+            sub={`$${o.price} · from @${o.seller} · ${timeAgo(o.createdAt)}`}
+            badge={
+              reviewedIds.includes(o.listingId) ? (
+                <span style={{ fontSize: 10, fontFamily: MONO, textTransform: "uppercase", color: C.mutedDim, display: "flex", alignItems: "center", gap: 4 }}>
+                  <Star size={11} fill={C.mutedDim} color={C.mutedDim} /> Reviewed
+                </span>
+              ) : (
+                <button
+                  onClick={() => setReviewTarget(o)}
+                  style={{ background: "none", border: `1px solid ${C.accentLine}`, color: C.accent, borderRadius: 999, padding: "5px 10px", fontSize: 10.5, fontWeight: 800, textTransform: "uppercase", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
+                >
+                  <Star size={11} /> Review
+                </button>
+              )
+            }
+          />
+        ))}
       </Section>
 
       {mySales.length > 0 && (
@@ -1638,8 +2191,80 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged }) {
           <LogOut size={14} /> Log out
         </Btn>
       </div>
+
+      {editingListing && (
+        <EditListingModal
+          listing={editingListing}
+          onClose={() => setEditingListing(null)}
+          onSaved={(updated) => { onListingsChanged(updated); setEditingListing(null); }}
+        />
+      )}
+
+      {reviewTarget && (
+        <ReviewModal
+          order={reviewTarget}
+          onClose={() => setReviewTarget(null)}
+          onSubmitted={() => { setReviewedIds((ids) => [...ids, reviewTarget.listingId]); setReviewTarget(null); }}
+        />
+      )}
     </div>
   );
+}
+
+/* ---------------------------------------------------------- MESSAGE NOTIFICATIONS (global, cross-screen) */
+function useMessageNotifications(user) {
+  const [unreadByUser, setUnreadByUser] = useState({});
+  // Which conversation is actively open + visible right now, so we
+  // don't fire a desktop notification for a chat the person is
+  // already looking at.
+  const activeChatRef = useRef(null);
+
+  const poll = useCallback(async () => {
+    if (!user) return;
+    try {
+      const res = await window.storage.list("hunt:chat:", true);
+      const keys = (res?.keys || []).filter((k) => k.includes(user.username));
+      const counts = {};
+      for (const key of keys) {
+        const other = key.replace("hunt:chat:", "").split("__").find((p) => p !== user.username);
+        if (!other) continue;
+        try {
+          const r = await window.storage.get(key, true);
+          const msgs = r ? JSON.parse(r.value) : [];
+          if (!msgs.length) continue;
+
+          const lastRead = getLastRead(user.username, other);
+          const unread = msgs.filter((m) => m.from !== user.username && m.ts > lastRead).length;
+          if (unread > 0) counts[other] = unread;
+
+          const isActive = activeChatRef.current === other && document.visibilityState === "visible";
+          maybeNotifyNewMessage({ me: user.username, other, messages: msgs, isConversationActive: isActive });
+        } catch (_) { /* skip this conversation, keep polling the rest */ }
+      }
+      setUnreadByUser(counts);
+    } catch (_) { /* offline or kv_store hiccup — try again next tick */ }
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return undefined;
+    poll();
+    const iv = setInterval(poll, 6000);
+    return () => clearInterval(iv);
+  }, [user, poll]);
+
+  const markRead = useCallback((other) => {
+    if (!user || !other) return;
+    setLastRead(user.username, other, Date.now());
+    setUnreadByUser((c) => {
+      if (!(other in c)) return c;
+      const next = { ...c };
+      delete next[other];
+      return next;
+    });
+  }, [user]);
+
+  const totalUnread = Object.values(unreadByUser).reduce((a, b) => a + b, 0);
+  return { unreadByUser, totalUnread, markRead, activeChatRef };
 }
 
 /* ---------------------------------------------------------- ROOT */
@@ -1653,6 +2278,15 @@ export default function HunT() {
   const [openChatWith, setOpenChatWith] = useState(null);
   const [checkoutListing, setCheckoutListing] = useState(null);
   const [viewProfileUsername, setViewProfileUsername] = useState(null);
+  const { unreadByUser, totalUnread, markRead, activeChatRef } = useMessageNotifications(user);
+
+  // Clicking a desktop notification jumps straight to that
+  // conversation, even if the person was elsewhere in the app.
+  useEffect(() => {
+    const onOpenChat = (e) => { setScreen("chat"); setOpenChatWith(e.detail); };
+    window.addEventListener("hunt:open-chat", onOpenChat);
+    return () => window.removeEventListener("hunt:open-chat", onOpenChat);
+  }, []);
 
   // Bootstrap whatever session already exists (e.g. page refresh), then
   // keep `user` in sync with real Supabase Auth state going forward.
@@ -1713,7 +2347,12 @@ export default function HunT() {
   if (!user) return <AuthScreen onLogin={setUser} />;
 
   const age = calcAge(user.dob);
-  const isMinor = age !== null && age < 18;
+  const ageUnverified = !user.dob;
+  // No birthday on file yet is treated the same as "under 18" for
+  // gating purposes — buying/selling stay locked until the member adds
+  // it themselves in Profile settings, so removing dob from signup
+  // doesn't weaken the age gate, just moves it.
+  const isMinor = ageUnverified || (age !== null && age < 18);
   const isRestricted = !!user.restricted;
 
   const goChat = (target) => { setScreen("chat"); setOpenChatWith(target); };
@@ -1728,10 +2367,12 @@ export default function HunT() {
     <NavShell
       user={user}
       screen={screen}
-      setScreen={(s) => { setScreen(s); if (s !== "chat") setOpenChatWith(null); }}
+      setScreen={(s) => { setScreen(s); if (s !== "chat") { setOpenChatWith(null); activeChatRef.current = null; } }}
       onLogout={handleLogout}
       isMinor={isMinor}
       isRestricted={isRestricted}
+      ageUnverified={ageUnverified}
+      unreadTotal={totalUnread}
     >
       {screen === "home" && (
         <HomeScreen
@@ -1742,14 +2383,31 @@ export default function HunT() {
           currentUser={user}
           isMinor={isMinor}
           isRestricted={isRestricted}
+          ageUnverified={ageUnverified}
           onViewProfile={setViewProfileUsername}
         />
       )}
-      {screen === "post" && <PostScreen user={user} onPosted={(arr) => setListings(arr)} isMinor={isMinor} isRestricted={isRestricted} />}
+      {screen === "post" && <PostScreen user={user} onPosted={(arr) => setListings(arr)} isMinor={isMinor} isRestricted={isRestricted} ageUnverified={ageUnverified} />}
       {screen === "chat" && (
-        <ChatScreen user={user} openWith={openChatWith} setOpenWith={setOpenChatWith} onViewProfile={setViewProfileUsername} />
+        <ChatScreen
+          user={user}
+          openWith={openChatWith}
+          setOpenWith={setOpenChatWith}
+          onViewProfile={setViewProfileUsername}
+          unreadByUser={unreadByUser}
+          markRead={markRead}
+          activeChatRef={activeChatRef}
+        />
       )}
-      {screen === "profile" && <ProfileScreen user={user} listings={listings} onLogout={handleLogout} onListingsChanged={(arr) => setListings(arr)} />}
+      {screen === "profile" && (
+        <ProfileScreen
+          user={user}
+          listings={listings}
+          onLogout={handleLogout}
+          onListingsChanged={(arr) => setListings(arr)}
+          onProfileUpdated={(patch) => setUser((u) => ({ ...u, ...patch }))}
+        />
+      )}
 
       {checkoutListing && !isMinor && !isRestricted && (
         <CheckoutModal listing={checkoutListing} buyer={user} onClose={() => setCheckoutListing(null)} onComplete={(u) => setListings(u)} />
