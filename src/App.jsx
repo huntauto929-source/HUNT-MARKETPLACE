@@ -11,11 +11,13 @@ import { uploadListingPhotos, deleteListingPhotos, validatePhotoFiles, MAX_PHOTO
 import {
   getLastRead, setLastRead, notificationsSupported, notificationPermission,
   requestNotificationPermission, maybeNotifyNewMessage,
+  getActivityWatermark, setActivityWatermark, showActivityNotification,
 } from "./notifications.js";
 import {
   sendFriendRequest, respondFriendRequest, removeFriend, getFriendState,
   createPost, deletePost, getFeed, getAvatarsForUsernames,
   toggleLike, getLikeSummary, getComments, addComment, deleteComment, getCommentCounts,
+  getActivitySince,
 } from "./feed.js";
 import { geocodeAddress, reverseGeocode, getCurrentPosition, googleMapsEmbedUrl, googleMapsDirectionsUrl } from "./geo.js";
 
@@ -908,7 +910,7 @@ function ResetPasswordScreen({ onDone }) {
 
 
 /* ---------------------------------------------------------- NAV */
-function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRestricted, ageUnverified, unreadTotal = 0 }) {
+function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRestricted, ageUnverified, unreadTotal = 0, activityCount = 0 }) {
   const items = [
     { id: "home", label: "Market", icon: Search },
     { id: "feed", label: "Feed", icon: Radio },
@@ -925,6 +927,8 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRest
     color: screen === id ? "#0a0a0a" : C.muted,
     transition: "all .12s",
   });
+
+  const navBadgeFor = (id) => (id === "chat" ? unreadTotal : id === "profile" ? activityCount : 0);
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, color: C.text, display: "flex" }} className="md:flex-row flex-col">
@@ -954,7 +958,7 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRest
             >
               <span style={{ position: "relative", display: "inline-flex" }}>
                 <it.icon size={18} />
-                {it.id === "chat" && unreadTotal > 0 && (
+                {navBadgeFor(it.id) > 0 && (
                   <span
                     style={{
                       position: "absolute", top: -6, right: -8, minWidth: 15, height: 15, padding: "0 3px",
@@ -962,7 +966,7 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRest
                       display: "flex", alignItems: "center", justifyContent: "center", fontFamily: MONO,
                     }}
                   >
-                    {unreadTotal > 9 ? "9+" : unreadTotal}
+                    {navBadgeFor(it.id) > 9 ? "9+" : navBadgeFor(it.id)}
                   </span>
                 )}
               </span>
@@ -1029,7 +1033,7 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRest
           >
             <span style={{ position: "relative", display: "inline-flex" }}>
               <it.icon size={19} />
-              {it.id === "chat" && unreadTotal > 0 && (
+              {navBadgeFor(it.id) > 0 && (
                 <span
                   style={{
                     position: "absolute", top: -5, right: -7, minWidth: 14, height: 14, padding: "0 3px",
@@ -1037,7 +1041,7 @@ function NavShell({ user, screen, setScreen, onLogout, children, isMinor, isRest
                     display: "flex", alignItems: "center", justifyContent: "center", fontFamily: MONO,
                   }}
                 >
-                  {unreadTotal > 9 ? "9+" : unreadTotal}
+                  {navBadgeFor(it.id) > 9 ? "9+" : navBadgeFor(it.id)}
                 </span>
               )}
             </span>
@@ -2767,8 +2771,50 @@ function SecurityCard({ user }) {
   );
 }
 
+/* ---------------------------------------------------------- ACTIVITY (recent likes/comments on your stuff) */
+function ActivityCard({ items, onNavigate }) {
+  if (!items.length) return null;
+  return (
+    <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 24 }}>
+      <p style={{ fontSize: 11, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.muted, marginBottom: 12 }}>
+        Activity
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {items.slice(0, 8).map((it) => {
+          const Icon = it.type === "like" ? Heart : MessageSquare;
+          const verb = it.type === "like" ? "liked" : "commented on";
+          const subject = it.kind === "listing" ? `your listing "${it.title || "listing"}"` : "your post";
+          return (
+            <button
+              key={it.id}
+              onClick={() => onNavigate?.(it.kind === "listing" ? "home" : "feed")}
+              style={{
+                display: "flex", alignItems: "flex-start", gap: 10, background: C.panel2, border: "none",
+                borderRadius: 10, padding: "10px 12px", cursor: "pointer", textAlign: "left",
+              }}
+            >
+              <Icon size={14} color={it.type === "like" ? C.warn : C.accent} style={{ marginTop: 2, flexShrink: 0 }} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <p style={{ fontSize: 12.5, color: C.text, lineHeight: 1.4 }}>
+                  <span style={{ fontWeight: 800 }}>@{it.actor}</span> {verb} {subject}
+                </p>
+                {it.text && (
+                  <p style={{ fontSize: 12, color: C.mutedDim, lineHeight: 1.4, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    "{it.text}"
+                  </p>
+                )}
+                <p style={{ fontSize: 10, color: C.mutedDim, fontFamily: MONO, marginTop: 3 }}>{timeAgo(it.ts)}</p>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------- PROFILE */
-function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileUpdated, theme, onThemeChange }) {
+function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileUpdated, theme, onThemeChange, activityFeed = [], onActivitySeen, onNavigate }) {
   const mine = listings.filter((l) => l.seller === user.username);
   const [orders, setOrders] = useState([]);
   const [deletingId, setDeletingId] = useState(null);
@@ -2778,6 +2824,8 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileU
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [avatarError, setAvatarError] = useState("");
   const avatarInputRef = useRef(null);
+
+  useEffect(() => { onActivitySeen?.(); }, [onActivitySeen]);
 
   const pickAvatar = () => avatarInputRef.current?.click();
 
@@ -2877,6 +2925,8 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileU
       </div>
       {avatarError && <div style={{ marginBottom: 12 }}><ErrorNote>{avatarError}</ErrorNote></div>}
       <div style={{ marginBottom: 12 }} />
+
+      <ActivityCard items={activityFeed} onNavigate={onNavigate} />
 
       <PersonalInfoCard user={user} onProfileUpdated={onProfileUpdated} />
 
@@ -3031,6 +3081,82 @@ function useMessageNotifications(user) {
   return { unreadByUser, totalUnread, markRead, activeChatRef };
 }
 
+/* ---------------------------------------------------------- ACTIVITY NOTIFICATIONS (likes/comments on your stuff) */
+function useActivityNotifications(user, listings) {
+  const [activityFeed, setActivityFeed] = useState([]);
+  const [unseenCount, setUnseenCount] = useState(0);
+  const profileActiveRef = useRef(false);
+
+  const poll = useCallback(async () => {
+    if (!user) return;
+    try {
+      const myListings = listings.filter((l) => l.seller === user.username);
+      const myPosts = await getFeed({ username: user.username });
+      const listingIds = myListings.map((l) => l.id);
+      const postIds = myPosts.map((p) => p.id);
+      if (!listingIds.length && !postIds.length) return;
+
+      const watermark = getActivityWatermark(user.username);
+      const sinceIso = new Date(watermark).toISOString();
+
+      const [listingActivity, postActivity] = await Promise.all([
+        getActivitySince({ targetType: "listing", targetIds: listingIds, sinceIso, excludeUsername: user.username }),
+        getActivitySince({ targetType: "post", targetIds: postIds, sinceIso, excludeUsername: user.username }),
+      ]);
+
+      const items = [];
+      for (const l of listingActivity.likes) {
+        const listing = myListings.find((x) => x.id === l.target_id);
+        items.push({ id: `like-listing-${l.id}`, type: "like", kind: "listing", ts: new Date(l.created_at).getTime(), actor: l.username, title: listing?.title });
+      }
+      for (const c of listingActivity.comments) {
+        const listing = myListings.find((x) => x.id === c.target_id);
+        items.push({ id: `comment-listing-${c.id}`, type: "comment", kind: "listing", ts: new Date(c.created_at).getTime(), actor: c.author_username, title: listing?.title, text: c.text });
+      }
+      for (const l of postActivity.likes) {
+        items.push({ id: `like-post-${l.id}`, type: "like", kind: "post", ts: new Date(l.created_at).getTime(), actor: l.username });
+      }
+      for (const c of postActivity.comments) {
+        items.push({ id: `comment-post-${c.id}`, type: "comment", kind: "post", ts: new Date(c.created_at).getTime(), actor: c.author_username, text: c.text });
+      }
+      if (!items.length) return;
+
+      items.sort((a, b) => b.ts - a.ts);
+
+      // Cap how many actually pop a desktop notification per cycle so
+      // a burst of activity doesn't spam the OS notification tray —
+      // the rest still land in the in-app Activity list.
+      if (!profileActiveRef.current) {
+        for (const it of items.slice(0, 3)) {
+          showActivityNotification(it);
+        }
+        setUnseenCount((c) => c + items.length);
+      }
+
+      setActivityFeed((prev) => {
+        const merged = [...items, ...prev.filter((p) => !items.some((it) => it.id === p.id))];
+        return merged.sort((a, b) => b.ts - a.ts).slice(0, 30);
+      });
+
+      const maxTs = items.reduce((max, it) => Math.max(max, it.ts), watermark);
+      setActivityWatermark(user.username, maxTs);
+    } catch (err) {
+      console.error("Activity poll failed:", err);
+    }
+  }, [user, listings]);
+
+  useEffect(() => {
+    if (!user) return undefined;
+    poll();
+    const iv = setInterval(poll, 8000);
+    return () => clearInterval(iv);
+  }, [user, poll]);
+
+  const markActivitySeen = useCallback(() => setUnseenCount(0), []);
+
+  return { activityFeed, unseenCount, markActivitySeen, profileActiveRef };
+}
+
 /* ---------------------------------------------------------- ROOT */
 export default function HunT() {
   const [user, setUser] = useState(null);
@@ -3043,6 +3169,7 @@ export default function HunT() {
   const [checkoutListing, setCheckoutListing] = useState(null);
   const [viewProfileUsername, setViewProfileUsername] = useState(null);
   const { unreadByUser, totalUnread, markRead, activeChatRef } = useMessageNotifications(user);
+  const { activityFeed, unseenCount, markActivitySeen, profileActiveRef } = useActivityNotifications(user, listings);
 
   // Lazy initializer runs during this very render, before the JSX
   // below evaluates any C.xxx — so the saved theme is already live
@@ -3061,6 +3188,21 @@ export default function HunT() {
     window.addEventListener("hunt:open-chat", onOpenChat);
     return () => window.removeEventListener("hunt:open-chat", onOpenChat);
   }, []);
+
+  // Same idea for a like/comment notification — jumps straight to
+  // the Activity list in Profile.
+  useEffect(() => {
+    const onOpenProfile = () => setScreen("profile");
+    window.addEventListener("hunt:open-profile", onOpenProfile);
+    return () => window.removeEventListener("hunt:open-profile", onOpenProfile);
+  }, []);
+
+  // Track whether Profile is the active screen (and the tab is
+  // visible) so activity notifications don't interrupt someone who's
+  // already looking at their own Activity list.
+  useEffect(() => {
+    profileActiveRef.current = screen === "profile" && document.visibilityState === "visible";
+  }, [screen, profileActiveRef]);
 
   // Bootstrap whatever session already exists (e.g. page refresh), then
   // keep `user` in sync with real Supabase Auth state going forward.
@@ -3147,6 +3289,7 @@ export default function HunT() {
       isRestricted={isRestricted}
       ageUnverified={ageUnverified}
       unreadTotal={totalUnread}
+      activityCount={unseenCount}
     >
       {screen === "home" && (
         <HomeScreen
@@ -3183,6 +3326,9 @@ export default function HunT() {
           onProfileUpdated={(patch) => setUser((u) => ({ ...u, ...patch }))}
           theme={theme}
           onThemeChange={changeTheme}
+          activityFeed={activityFeed}
+          onActivitySeen={markActivitySeen}
+          onNavigate={(s) => setScreen(s)}
         />
       )}
 

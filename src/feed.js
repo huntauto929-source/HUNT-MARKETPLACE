@@ -185,7 +185,33 @@ export async function getLikeSummary(targetType, targetIds) {
   return out;
 }
 
-/* ---------------------------------------------------------- COMMENTS */
+/* ---------------------------------------------------------- ACTIVITY (likes/comments on things you own, for notifications) */
+
+export async function getActivitySince({ targetType, targetIds, sinceIso, excludeUsername }) {
+  if (!targetIds?.length) return { likes: [], comments: [] };
+
+  const [likesRes, commentsRes] = await Promise.all([
+    supabase
+      .from("likes")
+      .select("id, target_id, username, created_at")
+      .eq("target_type", targetType)
+      .in("target_id", targetIds)
+      .gt("created_at", sinceIso),
+    supabase
+      .from("comments")
+      .select("id, target_id, author_username, text, created_at")
+      .eq("target_type", targetType)
+      .in("target_id", targetIds)
+      .gt("created_at", sinceIso),
+  ]);
+  if (likesRes.error) throw likesRes.error;
+  if (commentsRes.error) throw commentsRes.error;
+
+  return {
+    likes: (likesRes.data || []).filter((l) => l.username !== excludeUsername),
+    comments: (commentsRes.data || []).filter((c) => c.author_username !== excludeUsername),
+  };
+}
 
 export async function getComments(targetType, targetId) {
   const { data, error } = await supabase

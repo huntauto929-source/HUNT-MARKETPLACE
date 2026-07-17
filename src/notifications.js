@@ -34,6 +34,17 @@ function setLastNotified(me, other, ts) {
   try { localStorage.setItem(convoKey(NOTIFIED_PREFIX, me, other), String(ts)); } catch (_) { /* ignore */ }
 }
 
+const ACTIVITY_SEEN_PREFIX = "hunt:activity:lastseen:";
+
+export function getActivityWatermark(me) {
+  const v = localStorage.getItem(`${ACTIVITY_SEEN_PREFIX}${me}`);
+  return v ? Number(v) : Date.now(); // first run: don't notify about old history
+}
+
+export function setActivityWatermark(me, ts) {
+  try { localStorage.setItem(`${ACTIVITY_SEEN_PREFIX}${me}`, String(ts)); } catch (_) { /* ignore */ }
+}
+
 export function notificationsSupported() {
   return typeof window !== "undefined" && "Notification" in window;
 }
@@ -69,6 +80,26 @@ export function showMessageNotification({ from, text, onClick }) {
   } catch (_) {
     // Notification constructor can throw in some contexts; never let
     // a notification failure break the app.
+  }
+}
+
+export function showActivityNotification({ type, kind, actor, title, text }) {
+  if (!notificationsSupported() || Notification.permission !== "granted") return;
+  const verb = type === "like" ? "liked" : "commented on";
+  const subject = kind === "listing" ? `your listing "${title || "listing"}"` : "your post";
+  const body = type === "comment" && text ? (text.length > 100 ? `${text.slice(0, 97)}...` : text) : undefined;
+  try {
+    const n = new Notification(`@${actor} ${verb} ${subject}`, {
+      body,
+      tag: `hunt-activity-${kind}-${actor}-${type}`,
+    });
+    n.onclick = () => {
+      window.focus();
+      window.dispatchEvent(new CustomEvent("hunt:open-profile"));
+      n.close();
+    };
+  } catch (_) {
+    // never let a notification failure break the app
   }
 }
 
