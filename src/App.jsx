@@ -2890,7 +2890,9 @@ function NotificationsCard({ items, unreadByUser, onNavigate, onOpenChat }) {
   const messageEntries = Object.entries(unreadByUser || {}).filter(([, count]) => count > 0);
   const [tab, setTab] = useState(messageEntries.length ? "messages" : "activity");
 
-  if (!items.length && !messageEntries.length) return null;
+  // Always render this card — even with nothing to show — so it's a
+  // predictable, permanent fixture in Profile rather than something
+  // that mysteriously vanishes when there's no unread activity yet.
 
   const tabs = [
     { id: "messages", label: "Messages", count: messageEntries.length },
