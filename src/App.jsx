@@ -30,24 +30,80 @@ import { geocodeAddress, reverseGeocode, getCurrentPosition, googleMapsEmbedUrl,
    those are pre-built into the base stylesheet.
 =========================================================== */
 
-const C = {
-  bg: "#0a0a0a",
-  panel: "#151513",
-  panel2: "#1e1e1a",
-  border: "#2c2c26",
-  borderSoft: "#1f1f1c",
-  accent: "#ffe666",
-  accentHover: "#fff2a3",
-  accentDim: "rgba(255,230,102,0.14)",
-  accentLine: "rgba(255,230,102,0.34)",
-  gold: "#ffd23f",
-  goldDim: "rgba(255,210,63,0.14)",
-  text: "#f6f6f0",
-  muted: "#9a9a90",
-  mutedDim: "#65655c",
-  warn: "#ff8a65",
-  warnDim: "rgba(255,138,101,0.14)",
+/* ===========================================================
+   THEME SYSTEM
+   C is a single mutable object that every component reads colors
+   from at render time (e.g. C.bg, C.accent). Switching themes just
+   overwrites C's properties in place (Object.assign) — since nothing
+   in this file caches C.xxx at import time, every component picks up
+   the new values the next time it renders. applyTheme() + the root
+   component's `theme` state are what trigger that re-render.
+=========================================================== */
+
+const THEMES = {
+  midnight: {
+    label: "Midnight", swatch: "#ffe666",
+    bg: "#0a0a0a", panel: "#151513", panel2: "#1e1e1a", border: "#2c2c26", borderSoft: "#1f1f1c",
+    accent: "#ffe666", accentHover: "#fff2a3", accentDim: "rgba(255,230,102,0.14)", accentLine: "rgba(255,230,102,0.34)",
+    gold: "#ffd23f", goldDim: "rgba(255,210,63,0.14)",
+    text: "#f6f6f0", muted: "#9a9a90", mutedDim: "#65655c",
+    warn: "#ff8a65", warnDim: "rgba(255,138,101,0.14)",
+  },
+  white: {
+    label: "White", swatch: "#3b82f6",
+    bg: "#ffffff", panel: "#f5f6f8", panel2: "#eceef2", border: "#dde1e7", borderSoft: "#e7e9ed",
+    accent: "#3b82f6", accentHover: "#60a5fa", accentDim: "rgba(59,130,246,0.12)", accentLine: "rgba(59,130,246,0.32)",
+    gold: "#2563eb", goldDim: "rgba(37,99,235,0.12)",
+    text: "#12151a", muted: "#5b6472", mutedDim: "#8a92a0",
+    warn: "#d6472f", warnDim: "rgba(214,71,47,0.12)",
+  },
+  blue: {
+    label: "Blue", swatch: "#5ec8ff",
+    bg: "#0a1220", panel: "#12203a", panel2: "#182a48", border: "#25406b", borderSoft: "#1c3255",
+    accent: "#5ec8ff", accentHover: "#8ddcff", accentDim: "rgba(94,200,255,0.14)", accentLine: "rgba(94,200,255,0.34)",
+    gold: "#5ec8ff", goldDim: "rgba(94,200,255,0.14)",
+    text: "#eaf4ff", muted: "#8fa8c4", mutedDim: "#5d7796",
+    warn: "#ff9166", warnDim: "rgba(255,145,102,0.14)",
+  },
+  forest: {
+    label: "Forest", swatch: "#7fe0a0",
+    bg: "#0a1410", panel: "#132018", panel2: "#1a2b20", border: "#2c4736", borderSoft: "#1f3528",
+    accent: "#7fe0a0", accentHover: "#a6ecc0", accentDim: "rgba(127,224,160,0.14)", accentLine: "rgba(127,224,160,0.34)",
+    gold: "#7fe0a0", goldDim: "rgba(127,224,160,0.14)",
+    text: "#eafff0", muted: "#8fb89e", mutedDim: "#5f8770",
+    warn: "#ff8a65", warnDim: "rgba(255,138,101,0.14)",
+  },
+  sunset: {
+    label: "Sunset", swatch: "#ff9d5c",
+    bg: "#170e0a", panel: "#241611", panel2: "#301e17", border: "#4a2f22", borderSoft: "#38241b",
+    accent: "#ff9d5c", accentHover: "#ffb884", accentDim: "rgba(255,157,92,0.14)", accentLine: "rgba(255,157,92,0.34)",
+    gold: "#ff9d5c", goldDim: "rgba(255,157,92,0.14)",
+    text: "#fff3ea", muted: "#c8a389", mutedDim: "#8f6c56",
+    warn: "#ff5c5c", warnDim: "rgba(255,92,92,0.14)",
+  },
 };
+
+const THEME_LIST = Object.keys(THEMES).map((id) => ({ id, ...THEMES[id] }));
+const DEFAULT_THEME = "midnight";
+const THEME_STORAGE_KEY = "hunt:theme";
+
+// The live, mutable palette every component reads from.
+const C = { ...THEMES[DEFAULT_THEME] };
+
+function applyTheme(themeId) {
+  const palette = THEMES[themeId] || THEMES[DEFAULT_THEME];
+  Object.assign(C, palette);
+  try { localStorage.setItem(THEME_STORAGE_KEY, themeId); } catch (_) { /* ignore */ }
+}
+
+function loadSavedTheme() {
+  try {
+    const saved = localStorage.getItem(THEME_STORAGE_KEY);
+    return saved && THEMES[saved] ? saved : DEFAULT_THEME;
+  } catch (_) {
+    return DEFAULT_THEME;
+  }
+}
 
 const MONO = "ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, monospace";
 
@@ -2212,7 +2268,7 @@ function FeedScreen({ user }) {
   ];
 
   return (
-    <div style={{ maxWidth: 520, margin: "0 auto", padding: "24px 16px" }}>
+    <div style={{ maxWidth: 640, margin: "0 auto", padding: "24px 16px" }}>
       <Eyebrow dot>Share something with HunT</Eyebrow>
       <h1 style={{ fontSize: 24, fontWeight: 900, marginTop: 6, marginBottom: 4 }}>Feed</h1>
       <p style={{ color: C.muted, fontSize: 13, marginBottom: 18 }}>Post thoughts or photos — you pick who sees them.</p>
@@ -2591,8 +2647,40 @@ function PersonalInfoCard({ user, onProfileUpdated }) {
   );
 }
 
+/* ---------------------------------------------------------- APPEARANCE (theme picker) */
+function AppearanceCard({ theme, onThemeChange }) {
+  return (
+    <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 24 }}>
+      <p style={{ fontSize: 11, fontFamily: MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: C.muted, marginBottom: 12 }}>
+        Appearance
+      </p>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(84px, 1fr))", gap: 10 }}>
+        {THEME_LIST.map((t) => {
+          const active = theme === t.id;
+          return (
+            <button
+              key={t.id}
+              onClick={() => onThemeChange(t.id)}
+              style={{
+                display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "10px 6px",
+                borderRadius: 10, cursor: "pointer", background: t.bg,
+                border: `2px solid ${active ? t.accent : "transparent"}`,
+                outline: `1px solid ${t.border}`, outlineOffset: -1,
+              }}
+            >
+              <span style={{ width: 22, height: 22, borderRadius: 999, background: t.accent, border: `1px solid ${t.border}` }} />
+              <span style={{ fontSize: 10.5, fontWeight: 800, color: t.text }}>{t.label}</span>
+              {active && <CheckCircle size={11} color={t.accent} />}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------- PROFILE */
-function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileUpdated }) {
+function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileUpdated, theme, onThemeChange }) {
   const mine = listings.filter((l) => l.seller === user.username);
   const [orders, setOrders] = useState([]);
   const [deletingId, setDeletingId] = useState(null);
@@ -2703,6 +2791,8 @@ function ProfileScreen({ user, listings, onLogout, onListingsChanged, onProfileU
       <div style={{ marginBottom: 12 }} />
 
       <PersonalInfoCard user={user} onProfileUpdated={onProfileUpdated} />
+
+      <AppearanceCard theme={theme} onThemeChange={onThemeChange} />
 
       <Section title="My listings" count={mine.length} empty="You haven't posted anything yet.">
         {mine.map((l) => (
@@ -2864,6 +2954,16 @@ export default function HunT() {
   const [viewProfileUsername, setViewProfileUsername] = useState(null);
   const { unreadByUser, totalUnread, markRead, activeChatRef } = useMessageNotifications(user);
 
+  // Lazy initializer runs during this very render, before the JSX
+  // below evaluates any C.xxx — so the saved theme is already live
+  // by the time anything actually paints.
+  const [theme, setTheme] = useState(() => {
+    const saved = loadSavedTheme();
+    applyTheme(saved);
+    return saved;
+  });
+  const changeTheme = (id) => { applyTheme(id); setTheme(id); };
+
   // Clicking a desktop notification jumps straight to that
   // conversation, even if the person was elsewhere in the app.
   useEffect(() => {
@@ -2991,6 +3091,8 @@ export default function HunT() {
           onLogout={handleLogout}
           onListingsChanged={(arr) => setListings(arr)}
           onProfileUpdated={(patch) => setUser((u) => ({ ...u, ...patch }))}
+          theme={theme}
+          onThemeChange={changeTheme}
         />
       )}
 

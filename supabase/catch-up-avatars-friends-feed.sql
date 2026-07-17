@@ -26,7 +26,6 @@ create or replace view public_profiles as
     p.username,
     p.name,
     p.created_at,
-    p.avatar_url,
     case when p.dob_public and p.dob is not null
       then date_part('year', age(p.dob))::int
       else null
@@ -34,7 +33,8 @@ create or replace view public_profiles as
     case when p.contact_public then p.contact_method else null end as contact_method,
     case when p.contact_public then p.contact_value else null end as contact_value,
     coalesce(r.review_count, 0) as review_count,
-    r.avg_rating
+    r.avg_rating,
+    p.avatar_url
   from profiles p
   left join (
     select target_username, count(*) as review_count, round(avg(rating)::numeric, 1) as avg_rating
