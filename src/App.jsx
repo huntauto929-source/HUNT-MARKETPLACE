@@ -2380,6 +2380,8 @@ function FriendsPanel({ friendState, onChanged }) {
 function FeedScreen({ user, deepLinkPostId }) {
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [avatars, setAvatars] = useState({});
   const [likeSummary, setLikeSummary] = useState({});
   const [commentCounts, setCommentCounts] = useState({});
@@ -2387,6 +2389,7 @@ function FeedScreen({ user, deepLinkPostId }) {
   const [friendState, setFriendState] = useState({ friends: [], incoming: [], outgoing: [] });
   const [filter, setFilter] = useState("all"); // all | videos
   const [highlightId, setHighlightId] = useState(deepLinkPostId || null);
+  const sentinelRef = useRef(null);
 
   const [composerText, setComposerText] = useState("");
   const [composerPhotos, setComposerPhotos] = useState([]);
@@ -2402,8 +2405,9 @@ function FeedScreen({ user, deepLinkPostId }) {
   const loadFeed = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await getFeed();
+      const { posts: list, hasMore: more } = await getFeed();
       setPosts(list);
+      setHasMore(more);
       const ids = list.map((p) => p.id);
       const [av, likes, counts] = await Promise.all([
         getAvatarsForUsernames(list.map((p) => p.authorUsername)),
@@ -2420,7 +2424,52 @@ function FeedScreen({ user, deepLinkPostId }) {
     }
   }, []);
 
+  // Loads the next page (posts older than the last one currently shown)
+  // and appends it, merging in avatars/likes/comments for just the new
+  // posts rather than refetching everything already on screen.
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore || posts.length === 0) return;
+    setLoadingMore(true);
+    try {
+      const oldest = posts[posts.length - 1];
+      const { posts: list, hasMore: more } = await getFeed({ before: oldest.createdAtIso });
+      if (list.length) {
+        setPosts((prev) => [...prev, ...list]);
+        const ids = list.map((p) => p.id);
+        const [av, likes, counts] = await Promise.all([
+          getAvatarsForUsernames(list.map((p) => p.authorUsername)),
+          getLikeSummary("post", ids),
+          getCommentCounts("post", ids),
+        ]);
+        setAvatars((prev) => ({ ...prev, ...av }));
+        setLikeSummary((prev) => ({ ...prev, ...likes }));
+        setCommentCounts((prev) => ({ ...prev, ...counts }));
+      }
+      setHasMore(more);
+    } catch (err) {
+      console.error("Failed to load more of the feed:", err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, hasMore, posts]);
+
   useEffect(() => { loadFeed(); loadFriends(); }, [loadFeed, loadFriends]);
+
+  // Fetch the next page automatically once the sentinel div at the
+  // bottom of the list scrolls into view — this is what makes the
+  // feed "infinite scroll" instead of a flat 50-post cap.
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadMore();
+      },
+      { rootMargin: "400px" } // start fetching before the user hits the literal bottom
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [loadMore]);
 
   // A shared post link lands here — make sure it's visible under
   // whatever filter is active, scroll to it, and briefly highlight it.
@@ -2618,6 +2667,17 @@ function FeedScreen({ user, deepLinkPostId }) {
               </div>
             );
           })}
+
+          {hasMore && (
+            <div ref={sentinelRef} style={{ padding: "10px 0", textAlign: "center" }}>
+              {loadingMore && <p style={{ color: C.mutedDim, fontSize: 12, fontFamily: MONO }}>Loading more...</p>}
+            </div>
+          )}
+          {!hasMore && posts.length > 0 && (
+            <p style={{ color: C.mutedDim, fontSize: 12, fontFamily: MONO, textAlign: "center", padding: "10px 0" }}>
+              You're all caught up.
+            </p>
+          )}
         </div>
       )}
 
