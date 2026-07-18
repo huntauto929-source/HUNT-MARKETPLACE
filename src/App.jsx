@@ -3344,7 +3344,7 @@ function useActivityNotifications(user, listings) {
     if (!user) return;
     try {
       const myListings = listings.filter((l) => l.seller === user.username);
-      const myPosts = await getFeed({ username: user.username });
+      const { posts: myPosts } = await getFeed({ username: user.username });
       const listingIds = myListings.map((l) => l.id);
       const postIds = myPosts.map((p) => p.id);
       if (!listingIds.length && !postIds.length) return;
